@@ -1,0 +1,4 @@
+(library
+ (name ts_hoare_logic))
+
+(ocamllex lexer)

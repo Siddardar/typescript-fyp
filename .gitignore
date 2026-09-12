@@ -1,0 +1,9 @@
+# refs: papers, plans, notes, ts
+_refs/
+
+# OCaml
+_build/
+*.install
+
+# macOS
+.DS_Store

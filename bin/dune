@@ -1,0 +1,3 @@
+(executable
+ (name main)
+ (libraries ts_hoare_logic))
