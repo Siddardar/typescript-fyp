@@ -5,7 +5,7 @@ let total = ref 0
 
 (* Token stream for a source string, minus the trailing EOF. *)
 let tokens_of src =
-  Parse.tokenise (Lexing.from_string src)
+  Lex.tokenise (Lexing.from_string src)
   |> Array.to_list
   |> List.map (fun (l : Token.located) -> l.Token.token)
   |> List.filter (fun t -> t <> Token.EOF)
@@ -103,7 +103,7 @@ let () =
 
 let () =
   incr total;
-  let locs = Parse.tokenise (Lexing.from_string "a\n  bb\n") in
+  let locs = Lex.tokenise (Lexing.from_string "a\n  bb\n") in
   let at i = (locs.(i).Token.line, locs.(i).Token.col) in
   if at 0 <> (1, 1) || at 1 <> (2, 3) then (
     incr failures;

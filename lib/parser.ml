@@ -1,3 +1,4 @@
+exception Syntax_error of string
 open ParserState
 
 let declaration state = 
@@ -26,3 +27,26 @@ let program_entry state =
   let declarations = program state in
   expect_token state Token.EOF "end of input";
   declarations
+
+let parse_lexbuf lexbuf =
+  try program_entry (ParserState.make (Lex.tokenise lexbuf)) with
+  | ParserState.Error msg -> raise (Syntax_error msg)
+  | Lexer.Error msg ->
+      let p = Lexing.lexeme_start_p lexbuf in
+      raise
+        (Syntax_error
+           (Printf.sprintf "line %d, col %d: %s" p.pos_lnum
+              (p.pos_cnum - p.pos_bol + 1) msg))
+
+let of_string src = parse_lexbuf (Lexing.from_string src)
+
+let of_file file_path =
+  let in_chan = open_in_bin file_path in
+
+  Fun.protect
+    ~finally:(fun () -> close_in in_chan)
+    (fun () ->
+      let lexbuf = Lexing.from_channel in_chan in
+      Lexing.set_filename lexbuf file_path;
+
+      parse_lexbuf lexbuf)

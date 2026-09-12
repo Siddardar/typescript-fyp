@@ -1,6 +1,6 @@
 open Ts_hoare_logic
 
-let parse_program src = Parse.of_string Parser.program_entry src
+let parse_program src = Parser.of_string src
 
 let failures = ref 0
 let total = ref 0
@@ -13,7 +13,7 @@ let check src expected =
       incr failures;
       Printf.printf "FAIL  %S\n      expected: %s\n      actual:   %s\n" src expected
         (Ast.show_program ast)
-  | exception Parse.Syntax_error msg ->
+  | exception Parser.Syntax_error msg ->
       incr failures;
       Printf.printf "FAIL  %S\n      %s\n" src msg
 
@@ -23,7 +23,7 @@ let check_rejects src =
   | ast ->
       incr failures;
       Printf.printf "FAIL  %S should not parse, got %s\n" src (Ast.show_program ast)
-  | exception Parse.Syntax_error _ -> ()
+  | exception Parser.Syntax_error _ -> ()
 
 (* --- type aliases -------------------------------------------------------- *)
 
