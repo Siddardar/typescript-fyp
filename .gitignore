@@ -7,3 +7,6 @@ _build/
 
 # macOS
 .DS_Store
+
+# editor artifacts
+tempCodeRunnerFile.*

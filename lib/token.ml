@@ -48,7 +48,9 @@ let keywords : (string, t) Hashtbl.t =
   ])
 
 let ident_or_keyword s =
-  match Hashtbl.find_opt keywords s with Some kw -> kw | None -> IDENT s
+  match Hashtbl.find_opt keywords s with 
+  | Some kw -> kw 
+  | None -> IDENT s
 
 let show = function
   | IDENT s -> Printf.sprintf "identifier %S" s
