@@ -5,7 +5,9 @@ let total = ref 0
 
 (* An expression is not a top-level form, so drive the grammar directly. *)
 let parse_expr src =
-  ExprParser.expr_entry (ParserState.make (Lex.tokenise (Lexing.from_string src)))
+  match ParserComb.run ExprParser.expr (Lex.tokenise (Lexing.from_string src)) with
+  | Ok ast -> ast
+  | Error msg -> raise (ParserComb.Parse_error msg)
 
 let check src expected =
   incr total;
@@ -15,7 +17,7 @@ let check src expected =
       incr failures;
       Printf.printf "FAIL  %S\n      expected: %s\n      actual:   %s\n" src expected
         (Ast.show_expr ast)
-  | exception ParserState.Error msg ->
+  | exception ParserComb.Parse_error msg ->
       incr failures;
       Printf.printf "FAIL  %S\n      %s\n" src msg
 
@@ -25,7 +27,7 @@ let check_rejects src =
   | ast ->
       incr failures;
       Printf.printf "FAIL  %S should not parse, got %s\n" src (Ast.show_expr ast)
-  | exception ParserState.Error _ -> ()
+  | exception ParserComb.Parse_error _ -> ()
   | exception Lexer.Error _ -> ()
 
 (* --- primary ------------------------------------------------------------- *)

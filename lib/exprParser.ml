@@ -1,138 +1,92 @@
-open ParserState
+open ParserComb
 
-let rec expr state = assignment state
-  and assignment state =
-    let lhs = equality state in
+(* expr       ::= assignment
+   assignment ::= equality ('=' assignment)?            right-assoc
+   equality   ::= unary (('===' | '!==') unary)*        left-assoc
+   unary      ::= 'typeof' unary | postfix              prefix ops stack
+   postfix    ::= primary ('.' IDENT | '(' args ')')*   left-assoc
+   primary    ::= IDENT | NUMBER | STRING | '(' expr ')' | object
+   object     ::= '{' (prop (',' prop)* ','?)? '}'
+   prop       ::= IDENT ':' expr
+   args       ::= e | expr (',' expr)*                  no trailing comma
 
-    match peek_token state with 
-    | Token.EQUALS -> 
-      (match lhs with 
-      | Ast.Ident _ | Ast.Member _ -> ()
-      | _ -> failure_msg state "a var or property of lhs of '='");
+   The nesting is the precedence: each level parses its operands with the next
+   tighter one. *)
 
-      advance_pos state;
-      let rhs = assignment state in
+let rec expr st = assignment st
 
-      Ast.Assign (lhs, rhs)
-    
-    | _ -> lhs
-    
-  and equality state = 
-    let rec loop lhs = 
-      let op = 
-        match peek_token state with 
-        | Token.EQ_CHECK -> Some Ast.StrictEq
-        | Token.NEQ_CHECK -> Some Ast.StrictNeq
-        | _ -> None
+(* Only an identifier or a member access may be assigned to. The check runs
+   after '=' is consumed, so its failure is committed and alt will not fall
+   back to treating the left side as a complete expression. *)
+and assignment st =
+  (let* lhs = equality in
+   alt
+     (let* _ = token Token.EQUALS in
+      let* _ =
+        match lhs with
+        | Ast.Ident _ | Ast.Member _ -> return ()
+        | _ -> fail "a variable or property on the left of '='"
       in
+      let* rhs = assignment in
+      return (Ast.Assign (lhs, rhs)))
+     (return lhs))
+    st
 
-      match op with
-      | None -> lhs
-      | Some op -> 
-        advance_pos state;
-        let rhs = unary state in
-        loop (Ast.Binary (op, lhs, rhs))
-    in
-    
-    loop(unary state)
-  
-  and unary state = 
-    match peek_token state with 
-    | Token.KW_TYPEOF -> 
-      advance_pos state;
-      Ast.Unary (Ast.TypeOf, unary state)
-    | _ -> postfix state
-  
-  and postfix state = 
-    let rec loop exp =
-      match peek_token state with
-      | Token.DOT ->
-          advance_pos state;
-          let name = expect_ident state in
-          
-          loop (Ast.Member (exp, name))
-      
-      | Token.LPAREN ->
-          advance_pos state;
-          let a = args state in
-          expect_token state Token.RPAREN "')'";
-          
-          loop (Ast.Call (exp, a))
-      
-      | _ -> exp
-    in
-    loop (primary state)
-  
-  and primary state =
-    match peek_token state with 
-    | Token.IDENT name ->
-      advance_pos state;
-      Ast.Ident name
-    
-    | Token.NUMBER num -> 
-      advance_pos state;
-      Ast.Number num
+and equality st = chainl1 unary equality_op st
 
-    | Token.STRING str -> 
-      advance_pos state;
-      Ast.String str
+and equality_op st =
+  ((token Token.EQ_CHECK *> return (fun a b -> Ast.Binary (Ast.StrictEq, a, b)))
+  <|> 
+  (token Token.NEQ_CHECK *> return (fun a b -> Ast.Binary (Ast.StrictNeq, a, b))))
+    st
 
-    | Token.LPAREN -> 
-      advance_pos state;
-      let inner = expr state in
-      expect_token state Token.RPAREN "')'";
-      inner
+(* Recurses into itself, not postfix, so typeof typeof x parses. *)
+and unary st =
+  ((token Token.KW_TYPEOF *> unary >>| fun e -> Ast.Unary (Ast.TypeOf, e))
+  <|> postfix)
+    st
 
-    | Token.LBRACE ->
-      advance_pos state;
-      object_literal state
-    
-    | _ -> failure_msg state "an expression"
-  
-  and object_literal state =
-    let rec loop props =
-      match peek_token state with
-      | Token.RBRACE ->
-          advance_pos state;
-          Ast.ObjectLit (List.rev props)
+(* Each suffix yields a function wrapping what has been built so far, so
+   b.v.toUpperCase() folds into Call (Member (Member (b, v), toUpperCase), []). *)
+and postfix st =
+  (let* first = primary in
+   let* suffixes = many (member_suffix <|> call_suffix) in
+   return (List.fold_left (fun acc f -> f acc) first suffixes))
+    st
 
-      | Token.IDENT _ ->
-          let name = expect_ident state in
-          expect_token state Token.COLON "':'";
-          let value = expr state in
-          let p = { Ast.name; value } in
+and member_suffix st =
+  (token Token.DOT *> ident >>| fun name e -> Ast.Member (e, name)) st
 
-          begin
-            match peek_token state with
-            | Token.COMMA ->
-                advance_pos state;
-                loop (p :: props)
-            | Token.RBRACE -> loop (p :: props)
-            | _ -> failure_msg state "',' or '}'"
-          end
+and call_suffix st =
+  (between (token Token.LPAREN) (token Token.RPAREN) args >>| fun a e -> Ast.Call (e, a))
+    st
 
-      | _ -> failure_msg state "a property name or '}'"
-    in
+(* Parentheses group but leave no node behind. *)
+and primary st =
+  (choice
+     [
+       (ident >>| fun n -> Ast.Ident n);
+       (number >>| fun n -> Ast.Number n);
+       (str_lit >>| fun s -> Ast.String s);
+       between (token Token.LPAREN) (token Token.RPAREN) expr;
+       object_literal;
+     ]
+  <?> "an expression")
+    st
 
-    loop []
+(* Value literals take ',' only, unlike type literals. *)
+and object_literal st =
+  (between (token Token.LBRACE) (token Token.RBRACE)
+     (sep_by_trailing (token Token.COMMA) prop)
+  >>| fun props -> Ast.ObjectLit props)
+    st
 
-  and args state = 
-    match peek_token state with 
-    | Token.RPAREN -> []
-    | _ -> 
-      let rec loop acc = 
-        let e = expr state in
-        match peek_token state with 
-        | Token.COMMA -> 
-          advance_pos state;
-          loop (e :: acc)
-        | _ -> List.rev (e :: acc)
-      in
+and prop st =
+  (let* name = ident in
+   let* _ = token Token.COLON in
+   let* value = expr in
+   return { Ast.name; value })
+    st
 
-      loop []
-
-let expr_entry state = 
-  let e = expr state in
-
-  expect_token state Token.EOF "end of input";
-  e
+(* No trailing comma: f(x,) is rejected. *)
+and args st = sep_by (token Token.COMMA) expr st

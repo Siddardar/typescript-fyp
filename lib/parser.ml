@@ -1,42 +1,30 @@
+open ParserComb
+
 exception Syntax_error of string
-open ParserState
 
-let declaration state = 
-  expect_token state Token.KW_TYPE "'type'";
+(* program ::= statement* *)
 
-  let name = expect_ident state in
-  expect_token state Token.EQUALS "'='";
+(* stops at the first token that cannot start a statement, so the
+   failure surfaces as the end-of-input check. *)
+let program =
+  many StmtParser.statement <* (eof <?> "a statement or end of input")
 
-  let ty = TypeParser.ty state in
-  if peek_token state = Token.SEMICOLON then advance_pos state;
-
-  Ast.TypeAlias { name; ty }
-
-let program state = 
-  let rec loop declarations = 
-    match peek_token state with 
-    | Token.EOF -> List.rev declarations
-    | _ -> 
-      let d = declaration state in
-      loop (d :: declarations)
-  in
-
-  loop([])
-
-let program_entry state = 
-  let declarations = program state in
-  expect_token state Token.EOF "end of input";
-  declarations
+(* --- entry points -------------------------------------------------------- *)
 
 let parse_lexbuf lexbuf =
-  try program_entry (ParserState.make (Lex.tokenise lexbuf)) with
-  | ParserState.Error msg -> raise (Syntax_error msg)
-  | Lexer.Error msg ->
-      let p = Lexing.lexeme_start_p lexbuf in
-      raise
-        (Syntax_error
-           (Printf.sprintf "line %d, col %d: %s" p.pos_lnum
-              (p.pos_cnum - p.pos_bol + 1) msg))
+  (* lexing happens first, catch lexer error before run *)
+  let tokens =
+    try Lex.tokenise lexbuf with
+    | Lexer.Error msg ->
+        let p = Lexing.lexeme_start_p lexbuf in
+        raise
+          (Syntax_error
+             (Printf.sprintf "line %d, col %d: %s" p.pos_lnum
+                (p.pos_cnum - p.pos_bol + 1) msg))
+  in
+  match run program tokens with
+  | Ok ast -> ast
+  | Error msg -> raise (Syntax_error msg)
 
 let of_string src = parse_lexbuf (Lexing.from_string src)
 

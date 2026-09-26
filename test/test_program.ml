@@ -68,15 +68,16 @@ let () =
   (* missing right-hand side *)
   check_rejects "type Box =";
   check_rejects "type Box";
-  (* missing 'type' *)
-  check_rejects "Box = string";
-  check_rejects "{ v: string }";
+  (* missing 'type': now a valid expression statement, since the top level
+     accepts statements *)
+  check "Box = string" "(Box = string);";
   (* a keyword cannot be an alias name *)
   check_rejects "type type = string";
   check_rejects "type if = string";
   (* trailing junk *)
   check_rejects "type Box = string type";
   check_rejects "type A = string }";
+  check_rejects "{ v: string }";
   (* a lone semicolon is not a declaration *)
   check_rejects ";"
 

@@ -3,7 +3,9 @@ open Ts_hoare_logic
 (* A type is not a top-level form, so there is no public entry point for one.
    Drive the type grammar directly to unit-test it. *)
 let parse_type src =
-  TypeParser.ty_entry (ParserState.make (Lex.tokenise (Lexing.from_string src)))
+  match ParserComb.run TypeParser.ty (Lex.tokenise (Lexing.from_string src)) with
+  | Ok ast -> ast
+  | Error msg -> raise (ParserComb.Parse_error msg)
 
 let failures = ref 0
 let total = ref 0
@@ -16,7 +18,7 @@ let check_parse src expected =
       incr failures;
       Printf.printf "FAIL  %S\n      expected: %s\n      actual:   %s\n" src expected
         (Ast.show_type ast)
-  | exception ParserState.Error msg ->
+  | exception ParserComb.Parse_error msg ->
       incr failures;
       Printf.printf "FAIL  %S\n      %s\n" src msg
 
@@ -26,7 +28,7 @@ let check_rejects src =
   | ast ->
       incr failures;
       Printf.printf "FAIL  %S should not parse, got %s\n" src (Ast.show_type ast)
-  | exception ParserState.Error _ -> ()
+  | exception ParserComb.Parse_error _ -> ()
 
 (* --- names and unions --------------------------------------------------- *)
 

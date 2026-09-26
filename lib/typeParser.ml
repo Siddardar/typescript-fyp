@@ -1,70 +1,48 @@
-open ParserState
+open ParserComb
 
-let rec ty state = 
-  let rec loop lhs = 
-    match peek_token state with
-    | Token.BAR ->
-      advance_pos state;
-      
-      let rhs = atomic_type state in
-      loop (Ast.TypeUnion (lhs, rhs))
-  
-    | _ -> lhs
-  in
+(* type   ::= atom ('|' atom)*
+   atom   ::= IDENT | object
+   object ::= '{' (field (sep field)* sep?)? '}'
+   field  ::= IDENT ':' type
+   sep    ::= ';' | ','
 
-  loop (atomic_type state)
+   Each rule is written [let rec name st = ... st] rather than [let rec name =
+   ...]. The trailing st keeps it a syntactic function, which OCaml's value
+   restriction requires inside a recursive group. *)
 
-  and atomic_type state = 
-    match peek_token state with
-    | Token.IDENT n -> 
-        advance_pos state;
-        Ast.TypeName n
-    
-    | Token.LBRACE -> 
-      object_type state
-    
-    | _ -> failure_msg state "a type name or '{'"
+let rec ty st = chainl1 atomic_type union_op st
 
-  and object_type state = 
-    expect_token state Token.LBRACE "'{'";
+(* Yields the function that builds the node, so chainl1 can fold left:
+   a | b | c parses as ((a | b) | c). *)
+and union_op st = 
+   (token Token.BAR *> 
+   return (fun a b -> Ast.TypeUnion (a, b))) 
+   st
 
-    let rec loop fields = 
-      match peek_token state with
-      | Token.RBRACE -> 
-        advance_pos state;
-        Ast.TypeObject { fields = List.rev fields }
-      
-      | Token.IDENT _ -> 
-        let field = object_field state in
-        begin
-          match peek_token state with
-          | Token.SEMICOLON | Token.COMMA -> 
-            advance_pos state;
-            loop(field :: fields)
-          
-          | Token.RBRACE -> loop (field :: fields)
-          
-          | _ -> failure_msg state "';', ',' or '}'"
-        end
-      
-      | _ -> failure_msg state "a field name or '}'"
-    in
+and atomic_type st =
+  (choice
+     [
+       (ident >>| fun n -> Ast.TypeName n);
+       (* singleton types, which discriminated unions are built from *)
+       (str_lit >>| fun s -> Ast.TypeLit (Ast.LitStr s));
+       (number >>| fun n -> Ast.TypeLit (Ast.LitNum n));
+       object_type;
+     ]
+  <?> "a type")
+    st
 
-    loop []
+and object_type st =
+  (between (token Token.LBRACE) (token Token.RBRACE)
+     (sep_by_trailing separator field)
+  >>| fun fields -> Ast.TypeObject { fields })
+    st
 
-  and object_field state = 
-    match peek_token state with 
-    | Token.IDENT name -> 
-      advance_pos state;
-      expect_token state Token.COLON "':'";
+(* Type literals accept both separators, unlike value literals. *)
+and separator st = (token Token.SEMICOLON <|> token Token.COMMA) st
 
-      let field_type = ty state in
-      { Ast.name; ty = field_type }
-
-    | _ -> failure_msg state "a field name"
-
-let ty_entry state = 
-  let t = ty state in
-  
-  expect_token state Token.EOF "end of input";
-  t
+and field st =
+  (let* name = ident in
+   let* _ = token Token.COLON in
+   let* t = ty in
+   return ({ name; ty = t } : Ast.field))
+   st
