@@ -136,9 +136,34 @@ let rec stmt ctx d (s : Ast.stmt) : State.t =
       ignore (stmt ctx d then_);
       (match else_ with None -> () | Some s -> ignore (stmt ctx d s));
       d
-  | Ast.FunctionDecl _ -> d  (* bodies are checked by [program] *)
+  | Ast.FunctionDecl { name; params; ret_type; body } ->
+      (* nested declaration is checked here *)
+      let signature = Elab.signature ctx.types name params ret_type in
+      let d = State.bind name signature d in
+      check_body ctx d name params ret_type body;
+      d
 
 and block ctx d body = List.fold_left (fun d s -> stmt ctx d s) d body
+
+and always_returns (s : Ast.stmt) =
+  match s with
+  | Ast.Return _ -> true
+  | Ast.Block body -> List.exists always_returns body
+  | Ast.If { then_; else_ = Some e; _ } -> always_returns then_ && always_returns e
+  | _ -> false
+
+and check_body ctx d name (params : Ast.param list) ret_type body =
+  let result =
+    match ret_type with Some a -> Elab.ty ctx.types a | None -> Ty.top
+  in
+  let inner =
+    List.fold_left
+      (fun d (p : Ast.param) -> State.bind p.name (Elab.ty ctx.types p.ty) d)
+      d params
+  in
+  ignore (block { ctx with result = Some result } inner body);
+  if ret_type <> None && not (List.exists always_returns body) then
+    error "%s must return %s on every path" name (Ty.show result)
 
 let prelude =
   [ ("console", Ty.record [ ("log", Ty.arrow [ Ty.top ] Ty.top) ]) ]
@@ -154,18 +179,8 @@ let program (prog : Ast.program) =
   in
   let check_decl d (s : Ast.stmt) =
     match s with
-    | Ast.FunctionDecl { name; params; body; _ } ->
-        let result =
-          match List.assoc_opt name signatures with
-          | Some (Ty.Arrow (_, r)) -> Some r
-          | _ -> None
-        in
-        let inner =
-          List.fold_left
-            (fun d (p : Ast.param) -> State.bind p.name (Elab.ty types p.ty) d)
-            d params
-        in
-        ignore (block { types; result } inner body);
+    | Ast.FunctionDecl { name; params; ret_type; body } ->
+        check_body { types; result = None } d name params ret_type body;
         d
     | s -> stmt { types; result = None } d s
   in

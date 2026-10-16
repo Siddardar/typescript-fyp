@@ -95,6 +95,53 @@ function f(b: B) { b.v = "a"; }|};
   (* a non-lvalue on the left of '=' is rejected by the parser, so it never
      reaches the checker *)
 
+(* --- nested function declarations -----------------------------------------
+
+   A nested declaration is checked where it appears, and its name is bound both
+   after it and inside its own body, so recursion works. Before this, [stmt]
+   ignored FunctionDecl entirely: the body was never visited and the name was
+   never bound, so the checker reported ok about code it had not read. *)
+
+let () =
+  accepts "function f() { function g(): number { return 1; } }";
+  accepts "function f() { function g(): number { return 1; } let n = g(); }";
+  (* recursion: the name is in scope inside its own body *)
+  accepts "function f() { function g(x: number): number { return g(x); } }";
+  (* the body really is checked *)
+  rejects {|function f() { function g(): number { return "a"; } }|};
+  rejects "function f() { function g(x: number): number { return 1; } let n = g(\"a\"); }";
+  (* and the name does not escape the enclosing body *)
+  rejects "function f() { function g(): number { return 1; } }\nlet n = g();";
+  (* nesting more than one deep *)
+  accepts
+    "function f() { function g() { function h(): number { return 1; } let n = h(); } }";
+  rejects
+    {|function f() { function g() { function h(): number { return "a"; } } }|}
+
+(* --- every path must return -----------------------------------------------
+
+   An annotated result must actually be produced. An omitted annotation becomes
+   unknown, which nothing is required to produce: a stand-in for void, which
+   the kernel cannot express yet. *)
+
+let () =
+  accepts "function f(x: number): number { return 1; }";
+  accepts "function f(x: number): number { if (x) { return 1; } else { return 2; } }";
+  (* a return after the if covers every path *)
+  accepts "function f(x: number): number { if (x) { } return 1; }";
+  rejects "function f(): number { }";
+  (* one branch returning is not enough: the else path falls through *)
+  rejects "function f(x: number): number { if (x) { return 1; } }";
+  rejects "function f(x: number): number { if (x) { return 1; } else { } }";
+  (* a bare return produces nothing, so it cannot satisfy a result type *)
+  rejects "function f(): number { return; }";
+  (* without an annotation there is nothing to produce *)
+  accepts "function f() { }";
+  accepts "function f() { return 1; }";
+  accepts "function f() { return; }";
+  (* the rule applies to nested declarations too *)
+  rejects "function f() { function g(): number { } }"
+
 (* --- scoping ---------------------------------------------------------------
 
    A binding made inside a block does not escape it. *)
