@@ -104,3 +104,50 @@ let program (stmts : Ast.program) : env =
             t
   in
   List.map (fun (name, _) -> (name, resolve [] name)) declared
+
+(* --- function signatures --------------------------------------------------
+
+   Term variables live in their own namespace: TypeScript lets a type and a
+   value share a name, so [type Box = ...] and [function Box() {}] coexist. *)
+
+type term_env = (string * Ty.t) list
+
+let empty_term_env : term_env = []
+
+(* A function declaration becomes an arrow type.
+
+   TODO: void. It is neither unknown nor never, and needs an undefined value
+   type the kernel does not have yet. *)
+let signature (env : env) name (params : Ast.param list) ret_type =
+  let rec check_unique = function
+    | [] -> ()
+    | (p : Ast.param) :: rest ->
+        if List.exists (fun (q : Ast.param) -> q.name = p.name) rest then
+          error "parameter %s of %s is declared more than once" p.name name
+        else check_unique rest
+  in
+  check_unique params;
+  let param_types = List.map (fun (p : Ast.param) -> ty env p.ty) params in
+  let result = match ret_type with Some t -> ty env t | None -> Ty.top in
+  Ty.arrow param_types result
+
+(* Collect every top-level function signature. Nested declarations are the
+   checker's business, since they are scoped to a body. *)
+let signatures (env : env) (stmts : Ast.program) : term_env =
+  let declared =
+    List.filter_map
+      (function
+        | Ast.FunctionDecl { name; params; ret_type; _ } -> Some (name, params, ret_type)
+        | _ -> None)
+      stmts
+  in
+  let rec check_unique = function
+    | [] -> ()
+    | (name, _, _) :: rest ->
+        if List.exists (fun (n, _, _) -> n = name) rest then
+          error "function %s is declared more than once" name
+        else check_unique rest
+  in
+  check_unique declared;
+  List.map (fun (name, params, ret) -> (name, signature env name params ret)) declared
+

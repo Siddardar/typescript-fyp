@@ -104,6 +104,27 @@ let () =
   check_show "negation of a connective" (Not (Or (string_, number_)))
     "!(string | number)"
 
+(* --- function types -------------------------------------------------------
+
+   An arrow prints without brackets at the top level, and with them as an
+   operand of a connective, so the two readings stay distinguishable. *)
+
+let () =
+  check_show "arrow" (arrow [ string_ ] number_) "(string) => number";
+  check_show "no parameters" (arrow [] number_) "() => number";
+  check_show "several parameters" (arrow [ string_; number_ ] boolean_)
+    "(string, number) => boolean";
+  check_show "a union result" (arrow [ string_ ] (or_ number_ boolean_))
+    "(string) => (number | boolean)";
+  check_show "an arrow in a union" (or_ (arrow [ string_ ] number_) boolean_)
+    "((string) => number) | boolean";
+  check_show "a higher-order parameter" (arrow [ arrow [ string_ ] number_ ] boolean_)
+    "((string) => number) => boolean";
+  check_show "a curried result" (arrow [ string_ ] (arrow [ number_ ] boolean_))
+    "(string) => ((number) => boolean)";
+  check_show "an arrow in a row" (record [ ("f", arrow [ string_ ] number_) ])
+    {|{ %tag: "", f: (string) => number }|}
+
 (* --- rows as types --------------------------------------------------------
 
    The four surface vocabularies, now carrying types rather than values. *)

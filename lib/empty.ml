@@ -50,6 +50,7 @@ let to_prim = function
   | _ -> None
 
 let to_row = function Ty.Row r -> Some r | _ -> None
+let to_arrow = function Ty.Arrow (ps, r) -> Some (ps, r) | _ -> None
 
 (* A literal inhabits exactly one base type, so intersecting a base with a
    literal keeps the literal when they agree and is empty otherwise. *)
@@ -150,10 +151,16 @@ and disjunct_empty d =
     let pos = List.filter (fun t -> t <> Ty.Top) d.pos in
     let prims_pos = List.filter_map to_prim pos in
     let rows_pos = List.filter_map to_row pos in
+    let arrows_pos = List.filter_map to_arrow pos in
     let prims_neg = List.filter_map to_prim d.neg in
     let rows_neg = List.filter_map to_row d.neg in
-    (* a value is a primitive or a row, never both *)
-    if prims_pos <> [] && rows_pos <> [] then true
+    let arrows_neg = List.filter_map to_arrow d.neg in
+    (* A value is a primitive, a row, or a function — never two of those — so a
+       disjunct constraining it to be more than one kind is empty. *)
+    let kinds =
+      List.length (List.filter (fun l -> l <> 0) [ List.length prims_pos; List.length rows_pos; List.length arrows_pos ])
+    in
+    if kinds > 1 then true
     else if prims_pos <> [] then
       match
         List.fold_left
@@ -172,10 +179,39 @@ and disjunct_empty d =
       with
       | None -> true
       | Some c -> row_diff_empty c rows_neg
+    else if arrows_pos <> [] then arrow_diff_empty arrows_pos arrows_neg
     else
       (* No positive constraint, so the disjunct is everything minus the
          negatives. Covering everything needs Top, handled above. *)
       false
+
+(* A <: B *)
+and sub a b = is_empty (Ty.diff a b)
+
+(* An arrow type denotes the total functions from its parameters to its result.
+   It is empty only when the result is, and every parameter is inhabited: a
+   function with an uninhabited parameter can never be called, so it exists
+   vacuously. *)
+and arrow_empty (params, ret) =
+  is_empty ret && List.for_all (fun p -> not (is_empty p)) params
+
+(* Subtracting arrows.
+   Arguments are contravariant and the result covariant:
+   A2 -> B1  <:  A1 -> B2    when  A1 <: A2  and  B1 <: B2 *)
+
+and arrow_sub (p1, r1) (p2, r2) =
+  List.length p1 = List.length p2
+  && List.for_all2 (fun a b -> sub b a) p1 p2  (* contravariant *)
+  && sub r1 r2  (* covariant *)
+
+and arrow_diff_empty pos negs =
+  match pos with
+  | [ a ] ->
+      arrow_empty a
+      (* covered when any single negative is a supertype; a union of arrows
+         covering it without one doing so is not decided here *)
+      || List.exists (fun n -> arrow_sub a n) negs
+  | _ -> List.exists arrow_empty pos
 
 (* A constraint is empty when a field is empty, or a label is required both
    present and absent. *)

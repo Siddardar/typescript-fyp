@@ -107,6 +107,78 @@ let () =
 
 let () = check_rejects "type T = any"
 
+(* --- function signatures --------------------------------------------------
+
+   A declaration becomes an arrow type in the term environment, which is
+   separate from the type environment: TypeScript lets a type and a value share
+   a name. *)
+
+let sigs src name =
+  let prog = Parser.of_string src in
+  List.assoc name (Elab.signatures (Elab.program prog) prog)
+
+let check_sig src name expected =
+  incr total;
+  match sigs src name with
+  | actual when Ty.show actual = expected -> ()
+  | actual ->
+      incr failures;
+      Printf.printf "FAIL  %S\n      expected: %s\n      actual:   %s\n" src expected
+        (Ty.show actual)
+  | exception Elab.Error msg ->
+      incr failures;
+      Printf.printf "FAIL  %S\n      %s\n" src msg
+
+let check_sig_rejects src =
+  incr total;
+  let prog = Parser.of_string src in
+  match Elab.signatures (Elab.program prog) prog with
+  | _ ->
+      incr failures;
+      Printf.printf "FAIL  %S should not elaborate\n" src
+  | exception Elab.Error _ -> ()
+
+let () =
+  check_sig "function f(): number {}" "f" "() => number";
+  check_sig "function f(x: string): number {}" "f" "(string) => number";
+  check_sig "function f(x: string, y: number): boolean {}" "f"
+    "(string, number) => boolean";
+  (* an omitted return annotation becomes unknown; inferring it is the
+     checker's job *)
+  check_sig "function f(x: string) {}" "f" "(string) => unknown";
+  check_sig "function f() {}" "f" "() => unknown";
+  (* parameter and return types go through the type environment *)
+  check_sig "type Box = { v: string }\nfunction f(b: Box): Box {}" "f"
+    {|({ %tag: "", v: string }) => { %tag: "", v: string }|};
+  check_sig "function f(x: string | number): string {}" "f"
+    "(string | number) => string";
+  check_sig {|function f(x: "a"): number {}|} "f" {|("a") => number|};
+  (* several declarations *)
+  check_sig "function f(): string {}\nfunction g(): number {}" "g" "() => number";
+  (* rejections *)
+  check_sig_rejects "function f(x: Nope): number {}";
+  check_sig_rejects "function f(): Nope {}";
+  check_sig_rejects "function f(x: any): number {}";
+  check_sig_rejects "function f(x: string, x: number): boolean {}";
+  check_sig_rejects "function f(): string {}\nfunction f(): number {}"
+
+(* The two namespaces are separate, so a type and a function may share a name. *)
+let () =
+  let src = "type Box = { v: string }\nfunction Box(x: string): number {}" in
+  let prog = Parser.of_string src in
+  let types = Elab.program prog in
+  let terms = Elab.signatures types prog in
+  check "the type Box is a row" (Ty.show (List.assoc "Box" types) = {|{ %tag: "", v: string }|});
+  check "the value Box is an arrow"
+    (Ty.show (List.assoc "Box" terms) = "(string) => number")
+
+(* Variance is what makes a signature usable in place of another. *)
+let () =
+  let f = sigs "function f(x: unknown): string {}" "f" in
+  let g = sigs "function g(x: string): string | number {}" "g" in
+  check "a wider parameter and narrower result is a subtype" (Subty.subty f g);
+  check "and not the other way round" (not (Subty.subty g f))
+
 (* --- the whole pipeline, on a discriminated union --------------------------
 
    Source text to a decided subtyping question, through lexer, parser,

@@ -176,6 +176,67 @@ let () =
   check "narrowing away circle"
     (Subty.equiv (Subty.refine_negative shape ~by:(record [ ("kind", str "circle") ])) square)
 
+(* --- function types -------------------------------------------------------
+
+   Arguments are contravariant and the result covariant:
+
+     A2 -> B1  <:  A1 -> B2    when  A1 <: A2  and  B1 <: B2
+
+   so a function accepting more and returning less is the subtype. *)
+
+let () =
+  (* reflexivity, and arity must agree *)
+  sub (arrow [ string_ ] number_) (arrow [ string_ ] number_);
+  nsub (arrow [ string_ ] number_) (arrow [ string_; number_ ] number_);
+  nsub (arrow [ string_; number_ ] number_) (arrow [ string_ ] number_);
+  (* the result is covariant: returning less is safe, since every caller
+     already handles it *)
+  sub (arrow [ string_ ] (str "a")) (arrow [ string_ ] string_);
+  nsub (arrow [ string_ ] string_) (arrow [ string_ ] (str "a"));
+  sub (arrow [ string_ ] number_) (arrow [ string_ ] (or_ number_ string_));
+  (* the arguments are contravariant: accepting more is safe, since the
+     function handles everything a caller might pass *)
+  sub (arrow [ top ] number_) (arrow [ string_ ] number_);
+  nsub (arrow [ string_ ] number_) (arrow [ top ] number_);
+  sub (arrow [ or_ string_ number_ ] number_) (arrow [ string_ ] number_);
+  nsub (arrow [ string_ ] number_) (arrow [ or_ string_ number_ ] number_);
+  (* both directions at once *)
+  sub (arrow [ top ] (str "a")) (arrow [ string_ ] string_);
+  nsub (arrow [ string_ ] string_) (arrow [ top ] (str "a"));
+  (* each parameter varies independently *)
+  sub (arrow [ top; top ] number_) (arrow [ string_; number_ ] number_);
+  nsub (arrow [ top; string_ ] number_) (arrow [ string_; number_ ] number_)
+
+(* --- a function is neither a primitive nor a row -------------------------- *)
+
+let () =
+  empty (and_ (arrow [ string_ ] number_) string_);
+  empty (and_ (arrow [ string_ ] number_) (record [ ("x", string_) ]));
+  empty (and_ (arrow [ string_ ] number_) (str "a"));
+  nsub (arrow [ string_ ] number_) string_;
+  nsub string_ (arrow [ string_ ] number_);
+  nsub (arrow [ string_ ] number_) (record [ ("x", string_) ]);
+  (* but a row may carry one *)
+  inhabited (record [ ("f", arrow [ string_ ] number_) ]);
+  sub
+    (record [ ("f", arrow [ top ] (str "a")) ])
+    (record [ ("f", arrow [ string_ ] string_) ])
+
+(* --- when an arrow is empty -----------------------------------------------
+
+   Only when the result is, and every parameter is inhabited. A function with
+   an uninhabited parameter can never be called, so it exists vacuously. *)
+
+let () =
+  empty (arrow [ string_ ] bot);
+  inhabited (arrow [ bot ] bot);
+  inhabited (arrow [ string_ ] number_);
+  inhabited (arrow [] number_);
+  (* and the extremes behave *)
+  sub bot (arrow [ string_ ] number_);
+  sub (arrow [ string_ ] number_) top;
+  nsub top (arrow [ string_ ] number_)
+
 (* --- the Box type from _refs/ts/testing/test.ts --------------------------- *)
 
 let () =

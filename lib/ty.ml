@@ -11,6 +11,7 @@ type t =
   | Base of base
   | Lit of lit  (* a singleton: the one-element set containing this value *)
   | Row of t Row.t
+  | Arrow of t list * t  (* a function: parameters, then result *)
   | And of t * t
   | Or of t * t
   | Not of t
@@ -33,6 +34,7 @@ let boolean_ = Base Boolean
 let str s = Lit (LStr s)
 let num n = Lit (LNum n)
 let bool_ b = Lit (LBool b)
+let arrow params ret = Arrow (params, ret)
 
 let rec not_ = function
   | Top -> Bot
@@ -85,7 +87,14 @@ let show_lit = function
   | LNum n -> Printf.sprintf "%g" n
   | LBool b -> if b then "true" else "false"
 
-let rec show t = show_or t
+(* An arrow at the top level needs no brackets; one appearing as an operand of
+   a connective does, or (string) => number | boolean would be ambiguous. *)
+let rec show = function Arrow _ as t -> show_arrow t | t -> show_or t
+
+and show_arrow = function
+  | Arrow (params, ret) ->
+      "(" ^ String.concat ", " (List.map show params) ^ ") => " ^ show_atom ret
+  | t -> show t
 
 and show_or = function
   | Or (a, b) -> show_or a ^ " | " ^ show_or b
@@ -103,4 +112,4 @@ and show_atom = function
   | Base b -> show_base b
   | Lit l -> show_lit l
   | Row r -> Row.show show r
-  | (And _ | Or _ | Not _) as t -> "(" ^ show t ^ ")"
+  | (Arrow _ | And _ | Or _ | Not _) as t -> "(" ^ show t ^ ")"
