@@ -19,8 +19,6 @@ let builtin = function
   | "boolean" -> Some Ty.boolean_
   | "unknown" -> Some Ty.top
   | "never" -> Some Ty.bot
-  | "true" -> Some (Ty.bool_ true)
-  | "false" -> Some (Ty.bool_ false)
   | _ -> None
 
 (* (type alias, core type) *)
@@ -51,6 +49,7 @@ let rec elab resolve (t : Ast.ty) : Ty.t =
   | Ast.TypeName n -> resolve n
   | Ast.TypeLit (Ast.LitStr s) -> Ty.str s
   | Ast.TypeLit (Ast.LitNum n) -> Ty.num n
+  | Ast.TypeLit (Ast.LitBool b) -> Ty.bool_ b
   | Ast.TypeUnion (a, b) -> Ty.or_ (elab resolve a) (elab resolve b)
   | Ast.TypeObject { fields } -> object_row (List.map (elab_field resolve) fields)
 

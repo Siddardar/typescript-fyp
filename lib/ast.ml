@@ -4,7 +4,7 @@ type ty =
   | TypeUnion of ty * ty
   | TypeObject of object_ty
 
-  and lit_ty = LitStr of string | LitNum of float
+  and lit_ty = LitStr of string | LitNum of float | LitBool of bool
   and object_ty = { fields: field list }
   and field = { name: string; ty: ty }
 
@@ -12,6 +12,7 @@ type expr =
   | Ident of string
   | Number of float
   | String of string
+  | Bool of bool
   | Member of expr * string       (* a.v *)
   | Call of expr * expr list      (* f(x, y) *)
   | Unary of unop * expr          (* typeof a *)
@@ -19,8 +20,8 @@ type expr =
   | Assign of expr * expr         (* a = 1 OR a.v = 1 *)
   | ObjectLit of prop list        (* f({v: "a"}) *)
 
-  and unop = TypeOf
-  and binop = StrictEq | StrictNeq
+  and unop = TypeOf | Not
+  and binop = StrictEq | StrictNeq | And | Or
   and prop = { name: string; value: expr }
 
 (* A declaration is a kind of statement, as in TypeScript itself. *)
@@ -59,6 +60,7 @@ let rec show_type = function
   | TypeName n -> n
   | TypeLit (LitStr s) -> Printf.sprintf "%S" s
   | TypeLit (LitNum n) -> Printf.sprintf "%g" n
+  | TypeLit (LitBool b) -> if b then "true" else "false"
   | TypeUnion (a, b) -> show_type a ^ " | " ^ show_type b
   | TypeObject obj -> 
       let show_field (field : field) = 
@@ -72,13 +74,19 @@ let rec show_expr = function
   | Ident n -> n
   | Number n -> Printf.sprintf "%g" n
   | String s -> Printf.sprintf "%S" s
+  | Bool b -> if b then "true" else "false"
   | Member (expr, name) -> show_expr expr ^ "." ^ name
   | Call (func, args) ->
       show_expr func ^ "(" ^ String.concat ", " (List.map show_expr args) ^ ")"
   | Unary (TypeOf, expr) -> "(typeof " ^ show_expr expr ^ ")"
+  | Unary (Not, expr) -> "(!" ^ show_expr expr ^ ")"
   | Binary (binop, a, b) ->
       let op_str =
-        match binop with StrictEq -> " === " | StrictNeq -> " !== "
+        match binop with
+        | StrictEq -> " === "
+        | StrictNeq -> " !== "
+        | And -> " && "
+        | Or -> " || "
       in
       "(" ^ show_expr a ^ op_str ^ show_expr b ^ ")"
   | Assign (lhs, rhs) -> "(" ^ show_expr lhs ^ " = " ^ show_expr rhs ^ ")"

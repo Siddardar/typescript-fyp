@@ -153,6 +153,28 @@ let () =
   (* nor does a parameter escape its function *)
   rejects "function f(x: number) {}\nlet y = x;"
 
+(* --- logical operators -----------------------------------------------------
+
+   ! gives a boolean. && and || evaluate to one of their operands rather than
+   to a boolean, so their type is the union of the two: a && b is a when a is
+   falsy, and b otherwise. *)
+
+let () =
+  accepts "let a = true; let b = !a;";
+  accepts "let a = true; let b: boolean = !a;";
+  accepts "let a = true; let b = true; let c = a && b;";
+  accepts "let a = true; let b = true; if (a && b) { }";
+  accepts "let a = true; if (!a) { } else { }";
+  (* the union of the operands, not a boolean *)
+  accepts {|let x: number = 1; let s: string = "a"; let r: number | string = x || s;|};
+  rejects {|let x: number = 1; let s: string = "a"; let r: number = x || s;|};
+  (* operands are still checked *)
+  rejects "let a = true; let b = a && undefinedName;";
+  rejects "let b = !undefinedName;";
+  (* the shape a narrowing condition takes, once narrowing exists *)
+  accepts {|function f(x: string | number) { if (typeof x === "string" && true) { } }|};
+  accepts {|function f(x: string | number) { if (!(typeof x === "string")) { } }|}
+
 (* --- the shortcoming -------------------------------------------------------
 
    This layer is flow-INSENSITIVE. An [if] checks both branches against the

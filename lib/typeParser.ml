@@ -26,6 +26,8 @@ and atomic_type st =
        (* singleton types, which discriminated unions are built from *)
        (str_lit >>| fun s -> Ast.TypeLit (Ast.LitStr s));
        (number >>| fun n -> Ast.TypeLit (Ast.LitNum n));
+       (token Token.KW_TRUE *> return (Ast.TypeLit (Ast.LitBool true)));
+       (token Token.KW_FALSE *> return (Ast.TypeLit (Ast.LitBool false)));
        object_type;
      ]
   <?> "a type")

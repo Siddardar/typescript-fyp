@@ -26,6 +26,9 @@ rule read = parse
   (* multi-character operators *)
   | "==="        { Token.EQ_CHECK }
   | "!=="        { Token.NEQ_CHECK }
+  | "&&"         { Token.AMP_AMP }
+  | "||"         { Token.BAR_BAR }
+  | '!'          { Token.BANG }
 
   (* brackets *)
   | '{'          { Token.LBRACE }

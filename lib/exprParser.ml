@@ -5,7 +5,8 @@ open ParserComb
    equality   ::= unary (('===' | '!==') unary)*        left-assoc
    unary      ::= 'typeof' unary | postfix              prefix ops stack
    postfix    ::= primary ('.' IDENT | '(' args ')')*   left-assoc
-   primary    ::= IDENT | NUMBER | STRING | '(' expr ')' | object
+   primary    ::= IDENT | NUMBER | STRING | 'true' | 'false'
+                | '(' expr ')' | object
    object     ::= '{' (prop (',' prop)* ','?)? '}'
    prop       ::= IDENT ':' expr
    args       ::= e | expr (',' expr)*                  no trailing comma
@@ -19,7 +20,7 @@ let rec expr st = assignment st
    after '=' is consumed, so its failure is committed and alt will not fall
    back to treating the left side as a complete expression. *)
 and assignment st =
-  (let* lhs = equality in
+  (let* lhs = logical_or in
    alt
      (let* _ = token Token.EQUALS in
       let* _ =
@@ -32,6 +33,16 @@ and assignment st =
      (return lhs))
     st
 
+and logical_or st = chainl1 logical_and or_op st
+
+and or_op st =
+  (token Token.BAR_BAR *> return (fun a b -> Ast.Binary (Ast.Or, a, b))) st
+
+and logical_and st = chainl1 equality and_op st
+
+and and_op st =
+  (token Token.AMP_AMP *> return (fun a b -> Ast.Binary (Ast.And, a, b))) st
+
 and equality st = chainl1 unary equality_op st
 
 and equality_op st =
@@ -40,9 +51,10 @@ and equality_op st =
   (token Token.NEQ_CHECK *> return (fun a b -> Ast.Binary (Ast.StrictNeq, a, b))))
     st
 
-(* Recurses into itself, not postfix, so typeof typeof x parses. *)
+(* Recurses into itself, not postfix, so typeof typeof x and !!x parse. *)
 and unary st =
   ((token Token.KW_TYPEOF *> unary >>| fun e -> Ast.Unary (Ast.TypeOf, e))
+  <|> (token Token.BANG *> unary >>| fun e -> Ast.Unary (Ast.Not, e))
   <|> postfix)
     st
 
@@ -68,6 +80,8 @@ and primary st =
        (ident >>| fun n -> Ast.Ident n);
        (number >>| fun n -> Ast.Number n);
        (str_lit >>| fun s -> Ast.String s);
+       (token Token.KW_TRUE *> return (Ast.Bool true));
+       (token Token.KW_FALSE *> return (Ast.Bool false));
        between (token Token.LPAREN) (token Token.RPAREN) expr;
        object_literal;
      ]

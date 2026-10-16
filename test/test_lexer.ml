@@ -74,7 +74,26 @@ let () =
   check "a.b.c"
     [ Token.IDENT "a"; Token.DOT; Token.IDENT "b"; Token.DOT; Token.IDENT "c" ];
   check "()" [ Token.LPAREN; Token.RPAREN ];
-  check_rejects "!"
+  (* a lone & is not a token; a lone ! is, since it is logical not *)
+  check_rejects "&"
+
+(* --- logical operators ----------------------------------------------------
+
+   Longest match decides these, so no rule ordering is needed: "!==" beats "!",
+   and "||" beats "|". *)
+
+let () =
+  check "!" [ Token.BANG ];
+  check "!==" [ Token.NEQ_CHECK ];
+  check "!!" [ Token.BANG; Token.BANG ];
+  check "&&" [ Token.AMP_AMP ];
+  check "||" [ Token.BAR_BAR ];
+  check "|" [ Token.BAR ];
+  check "|||" [ Token.BAR_BAR; Token.BAR ];
+  check "a&&b" [ Token.IDENT "a"; Token.AMP_AMP; Token.IDENT "b" ];
+  check "!a" [ Token.BANG; Token.IDENT "a" ];
+  (* a single & is still not a token *)
+  check_rejects "&"
 
 (* --- comments ------------------------------------------------------------ *)
 

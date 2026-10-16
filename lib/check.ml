@@ -46,6 +46,7 @@ let rec synth ctx d (e : Ast.expr) : Ty.t =
       | None -> error "%s is not defined" x)
   | Ast.Number n -> Ty.num n
   | Ast.String s -> Ty.str s
+  | Ast.Bool b -> Ty.bool_ b
   | Ast.ObjectLit props ->
       Ty.record (List.map (fun (p : Ast.prop) -> (p.name, synth ctx d p.value)) props)
   | Ast.Member (obj, field) -> (
@@ -73,10 +74,15 @@ let rec synth ctx d (e : Ast.expr) : Ty.t =
   | Ast.Unary (Ast.TypeOf, operand) ->
       let t = synth ctx d operand in
       Ty.any_of (List.map Ty.str (typeof_tags t))
-  | Ast.Binary (_, a, b) ->
-      ignore (synth ctx d a);
-      ignore (synth ctx d b);
+  | Ast.Unary (Ast.Not, operand) ->
+      ignore (synth ctx d operand);
       Ty.boolean_
+  | Ast.Binary (op, a, b) -> (
+      let ta = synth ctx d a and tb = synth ctx d b in
+      match op with
+      (* && and || evaluate to operands, not boolean:*)
+      | Ast.And | Ast.Or -> Ty.or_ ta tb
+      | Ast.StrictEq | Ast.StrictNeq -> Ty.boolean_)
 
 and assign_target ctx d (lhs : Ast.expr) =
   match lhs with

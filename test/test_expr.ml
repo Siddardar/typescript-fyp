@@ -94,6 +94,36 @@ let () =
   check_rejects "=== b";
   check_rejects "a ==="
 
+(* --- logical operators ----------------------------------------------------
+
+   Binding order, loosest first: = then || then && then === then ! *)
+
+let () =
+  check "a && b" "(a && b)";
+  check "a || b" "(a || b)";
+  check "!a" "(!a)";
+  (* both are left-associative *)
+  check "a && b && c" "((a && b) && c)";
+  check "a || b || c" "((a || b) || c)";
+  (* && binds tighter than || *)
+  check "a || b && c" "(a || (b && c))";
+  check "a && b || c" "((a && b) || c)";
+  (* === binds tighter than && *)
+  check "a === b && c === d" "((a === b) && (c === d))";
+  (* ! is a prefix operator and stacks *)
+  check "!a && b" "((!a) && b)";
+  check "!!a" "(!(!a))";
+  check "!(a && b)" "(!(a && b))";
+  (* parentheses override *)
+  check "(a || b) && c" "((a || b) && c)";
+  (* the shape a narrowing condition takes *)
+  check {|typeof x === "s" && y|} {|(((typeof x) === "s") && y)|};
+  check {|!(typeof x === "s")|} {|(!((typeof x) === "s"))|};
+  check_rejects "a &&";
+  check_rejects "&& b";
+  check_rejects "a ||";
+  check_rejects "!"
+
 (* --- assignment, right-associative --------------------------------------- *)
 
 let () =

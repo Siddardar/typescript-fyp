@@ -12,6 +12,8 @@ type t =
   | KW_CONST
   | KW_RETURN
   | KW_TYPEOF
+  | KW_TRUE
+  | KW_FALSE
   (* brackets *)
   | LBRACE
   | RBRACE
@@ -27,6 +29,9 @@ type t =
   | EQUALS
   | EQ_CHECK
   | NEQ_CHECK
+  | AMP_AMP
+  | BAR_BAR
+  | BANG
   (* end of input *)
   | EOF
 
@@ -45,6 +50,8 @@ let keywords : (string, t) Hashtbl.t =
       ("const", KW_CONST);
       ("return", KW_RETURN);
       ("typeof", KW_TYPEOF);
+    ("true", KW_TRUE);
+    ("false", KW_FALSE);
   ])
 
 let ident_or_keyword s =
@@ -64,6 +71,8 @@ let show = function
   | KW_CONST -> "'const'"
   | KW_RETURN -> "'return'"
   | KW_TYPEOF -> "'typeof'"
+  | KW_TRUE -> "'true'"
+  | KW_FALSE -> "'false'"
   | LBRACE -> "'{'"
   | RBRACE -> "'}'"
   | LPAREN -> "'('"
@@ -76,4 +85,7 @@ let show = function
   | EQUALS -> "'='"
   | EQ_CHECK -> "'==='"
   | NEQ_CHECK -> "'!=='"
+  | AMP_AMP -> "'&&'"
+  | BAR_BAR -> "'||'"
+  | BANG -> "'!'"
   | EOF -> "end of input"
