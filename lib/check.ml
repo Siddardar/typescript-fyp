@@ -37,6 +37,42 @@ let rec typeof_tags t =
   | Ty.Bot -> []
   | Ty.Top | Ty.Not _ -> every
 
+type refinement = (string * Ty.t) list
+
+(* inverse of [typeof_tags *)
+let type_of_tag = function
+  | "string" -> Some Ty.string_
+  | "number" -> Some Ty.number_
+  | "boolean" -> Some Ty.boolean_
+  | _ -> None
+
+(* a field is mutable, and any call can write it TODO: needs ownership. *)
+let rec narrows (e : Ast.expr) : refinement * refinement =
+  let none = ([], []) in
+  match e with
+  (* typeof x === "string", in either operand order *)
+  | Ast.Binary (op, Ast.Unary (Ast.TypeOf, Ast.Ident x), Ast.String tag)
+  | Ast.Binary (op, Ast.String tag, Ast.Unary (Ast.TypeOf, Ast.Ident x)) -> (
+      match (type_of_tag tag, op) with
+      | Some t, Ast.StrictEq -> ([ (x, t) ], [ (x, Ty.not_ t) ])
+      | Some t, Ast.StrictNeq -> ([ (x, Ty.not_ t) ], [ (x, t) ])
+      | None, _ | _, (Ast.And | Ast.Or) -> none)
+  (* Negation swaps the two branches. *)
+  | Ast.Unary (Ast.Not, inner) ->
+      let when_true, when_false = narrows inner in
+      (when_false, when_true)
+  (* Both halves of an && hold when it holds. When it fails, either could have,
+     so nothing is known. || is the mirror. *)
+  | Ast.Binary (Ast.And, a, b) ->
+      let ta, _ = narrows a and tb, _ = narrows b in
+      (ta @ tb, [])
+  | Ast.Binary (Ast.Or, a, b) ->
+      let _, fa = narrows a and _, fb = narrows b in
+      ([], fa @ fb)
+  | _ -> none
+
+let apply (r : refinement) d = List.fold_left (fun d (x, t) -> State.refine x t d) d r
+
 (* --- expressions ---------------------------------------------------------- *)
 let rec synth ctx d (e : Ast.expr) : Ty.t =
   match e with
@@ -139,9 +175,19 @@ let rec stmt ctx d (s : Ast.stmt) : State.t =
       d
   | Ast.If { cond; then_; else_ } ->
       ignore (synth ctx d cond);
-      ignore (stmt ctx d then_);
-      (match else_ with None -> () | Some s -> ignore (stmt ctx d s));
-      d
+      let when_true, when_false = narrows cond in
+      let d_then = apply when_true d and d_else = apply when_false d in
+      let after_then =
+        if State.is_unreachable d_then then d_then else stmt ctx d_then then_
+      in
+      let after_else =
+        match else_ with
+        | None -> d_else
+        | Some s -> if State.is_unreachable d_else then d_else else stmt ctx d_else s
+      in
+      (* TODO: after [if (typeof x === "string") { return; }] this still
+         believes x is string | number. *)
+      State.or_ after_then after_else
   | Ast.FunctionDecl { name; params; ret_type; body } ->
       (* nested declaration is checked here *)
       let signature = Elab.signature ctx.types name params ret_type in

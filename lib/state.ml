@@ -8,7 +8,7 @@ type heap =
   | Star of heap * heap
 
 (* --- states ---------------------------------------------------------------
-   TODO: existential quantification. Paper A writes each conjunct as
+   TODO: existential quantification. each conjunct as
    exists v*. sigma /\ pi; fresh result variables will need it at entailment. *)
 
 type conjunct = { heap : heap; bindings : (string * Ty.t) list }
@@ -49,7 +49,15 @@ let mem name (d : t) = Option.is_some (lookup name d)
 let narrow existing t =
   if Subty.subty existing t then existing
   else if Subty.subty t existing then t
-  else Ty.and_ existing t
+  else
+    (* simplify: (string | number) & !string => number *)
+    let intersected = Ty.and_ existing t in
+    let rec drop = function
+      | Ty.Or (a, b) -> Ty.or_ (drop a) (drop b)
+      | arm -> if Empty.is_empty (Ty.and_ arm t) then Ty.bot else arm
+    in
+    let dropped = drop existing in
+    if Subty.equiv dropped intersected then dropped else intersected
 
 let refine name t (d : t) : t =
   prune

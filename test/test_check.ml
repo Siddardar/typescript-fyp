@@ -175,6 +175,109 @@ let () =
   accepts {|function f(x: string | number) { if (typeof x === "string" && true) { } }|};
   accepts {|function f(x: string | number) { if (!(typeof x === "string")) { } }|}
 
+(* --- narrowing a local variable --------------------------------------------
+
+   The surface-level half of Paper A's Match and Cast rules: a condition
+   refines the type state along each branch. Sound without ownership, because
+   nothing can write a local behind the checker's back.
+
+   A field is a different matter, and is covered further down. *)
+
+let prelude =
+  "function wantsString(s: string): number { return 1; }\n\
+   function wantsNumber(n: number): number { return 1; }\n"
+
+let p src = prelude ^ src
+
+let () =
+  (* the then-branch learns the tested type *)
+  accepts (p {|function f(x: string | number) { if (typeof x === "string") { wantsString(x); } }|});
+  (* the else-branch learns its complement *)
+  accepts
+    (p
+       {|function f(x: string | number) { if (typeof x === "string") { } else { wantsNumber(x); } }|});
+  (* !== swaps the two *)
+  accepts (p {|function f(x: string | number) { if (typeof x !== "string") { wantsNumber(x); } }|});
+  accepts
+    (p {|function f(x: string | number) { if (typeof x !== "string") { } else { wantsString(x); } }|});
+  (* so does ! *)
+  accepts
+    (p {|function f(x: string | number) { if (!(typeof x === "string")) { wantsNumber(x); } }|});
+  accepts (p {|function f(x: string | number) { if (!!(typeof x === "string")) { wantsString(x); } }|});
+  (* either operand order *)
+  accepts (p {|function f(x: string | number) { if ("string" === typeof x) { wantsString(x); } }|});
+  (* a three-way union narrows one arm at a time *)
+  accepts
+    (p
+       {|function f(x: string | number | boolean) { if (typeof x === "string") { wantsString(x); } }|});
+  (* nested guards compose *)
+  accepts
+    (p
+       {|function f(x: string | number) { if (typeof x === "number") { } else { if (typeof x === "string") { wantsString(x); } } }|})
+
+(* The wrong branch learns the wrong thing. *)
+let () =
+  rejects (p {|function f(x: string | number) { if (typeof x === "string") { wantsNumber(x); } }|});
+  rejects
+    (p
+       {|function f(x: string | number) { if (typeof x === "string") { } else { wantsString(x); } }|});
+  (* and the narrowing does not outlive the branch *)
+  rejects (p {|function f(x: string | number) { if (typeof x === "string") { } wantsString(x); }|})
+
+(* --- how conditions compose ------------------------------------------------
+
+   Both halves of an && hold when it holds. When it fails, either could have,
+   so nothing is known. || is the mirror. *)
+
+let () =
+  accepts
+    (p
+       {|function f(x: string | number, y: string | number) { if (typeof x === "string" && typeof y === "string") { wantsString(x); wantsString(y); } }|});
+  (* a && with an unrelated operand still narrows *)
+  accepts
+    (p {|function f(x: string | number) { if (typeof x === "string" && true) { wantsString(x); } }|});
+  (* || proves nothing in the then-branch *)
+  rejects
+    (p {|function f(x: string | number) { if (typeof x === "string" || true) { wantsString(x); } }|});
+  (* but it does in the else-branch, where both halves failed *)
+  accepts
+    (p
+       {|function f(x: string | number) { if (typeof x === "string" || false) { } else { wantsNumber(x); } }|});
+  (* and && is the mirror: its else-branch proves nothing *)
+  rejects
+    (p
+       {|function f(x: string | number) { if (typeof x === "string" && true) { } else { wantsNumber(x); } }|})
+
+(* --- what does not narrow -------------------------------------------------- *)
+
+let () =
+  (* A FIELD is not a name. Narrowing one is unsound without ownership, since
+     any call may write it, so it is deliberately left alone. *)
+  rejects
+    (p
+       {|type B = { v: string | number }
+function f(b: B) { if (typeof b.v === "string") { wantsString(b.v); } }|});
+  (* object and function have no single type in the kernel, so a test against
+     either narrows nothing *)
+  rejects
+    (p
+       {|type B = { v: string }
+function f(x: string | B) { if (typeof x === "object") { } else { wantsString(x); } }|});
+  (* a condition that is not a type test proves nothing *)
+  rejects (p {|function f(x: string | number) { if (true) { wantsString(x); } }|})
+
+(* --- unreachable branches --------------------------------------------------
+
+   A refinement that empties the binding makes the branch dead, so its body is
+   skipped rather than checked against a state that says nothing. *)
+
+let () =
+  accepts {|function f(x: string) { if (typeof x === "number") { let q = undefinedName; } }|};
+  accepts
+    {|function f(x: string) { if (typeof x === "string") { } else { let q = undefinedName; } }|};
+  (* the live branch is still checked *)
+  rejects {|function f(x: string) { if (typeof x === "string") { let q = undefinedName; } }|}
+
 (* --- the shortcoming -------------------------------------------------------
 
    This layer is flow-INSENSITIVE. An [if] checks both branches against the
