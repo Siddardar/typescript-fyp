@@ -4,22 +4,6 @@ let error fmt = Printf.ksprintf (fun s -> raise (Type_error s)) fmt
 
 type ctx = { types : Elab.env; result : Ty.t option }
 
-(* --- projecting a field out of a type ------------------------------------ *)
-let rec project t label =
-  match t with
-  | Ty.Row r -> Row.lookup label r
-  | Ty.Or (a, b) -> (
-      match (project a label, project b label) with
-      | Some x, Some y -> Some (Ty.or_ x y)
-      | _ -> None  (* absent from one arm: not readable from the whole *)
-      )
-  | Ty.And (a, b) -> (
-      match (project a label, project b label) with
-      | Some x, Some y -> Some (Ty.and_ x y)
-      | Some x, None | None, Some x -> Some x
-      | None, None -> None)
-  | _ -> None
-
 let as_arrow = function Ty.Arrow (ps, r) -> Some (ps, r) | _ -> None
 
 let rec typeof_tags t =
@@ -37,7 +21,13 @@ let rec typeof_tags t =
   | Ty.Bot -> []
   | Ty.Top | Ty.Not _ -> every
 
-type refinement = (string * Ty.t) list
+type refinement = (State.path * Ty.t) list
+
+let rec path_of (e : Ast.expr) : State.path option =
+  match e with
+  | Ast.Ident x -> Some (State.var x)
+  | Ast.Member (obj, f) -> Option.map (fun p -> State.field p f) (path_of obj)
+  | _ -> None
 
 (* inverse of [typeof_tags *)
 let type_of_tag = function
@@ -46,17 +36,17 @@ let type_of_tag = function
   | "boolean" -> Some Ty.boolean_
   | _ -> None
 
-(* a field is mutable, and any call can write it TODO: needs ownership. *)
+(* narrowing survives call? => handled by the Call rule. *)
 let rec narrows (e : Ast.expr) : refinement * refinement =
   let none = ([], []) in
   match e with
-  (* typeof x === "string", in either operand order *)
-  | Ast.Binary (op, Ast.Unary (Ast.TypeOf, Ast.Ident x), Ast.String tag)
-  | Ast.Binary (op, Ast.String tag, Ast.Unary (Ast.TypeOf, Ast.Ident x)) -> (
-      match (type_of_tag tag, op) with
-      | Some t, Ast.StrictEq -> ([ (x, t) ], [ (x, Ty.not_ t) ])
-      | Some t, Ast.StrictNeq -> ([ (x, Ty.not_ t) ], [ (x, t) ])
-      | None, _ | _, (Ast.And | Ast.Or) -> none)
+  (* typeof <path> === "string", in either operand order *)
+  | Ast.Binary (op, Ast.Unary (Ast.TypeOf, subject), Ast.String tag)
+  | Ast.Binary (op, Ast.String tag, Ast.Unary (Ast.TypeOf, subject)) -> (
+      match (path_of subject, type_of_tag tag, op) with
+      | Some p, Some t, Ast.StrictEq -> ([ (p, t) ], [ (p, Ty.not_ t) ])
+      | Some p, Some t, Ast.StrictNeq -> ([ (p, Ty.not_ t) ], [ (p, t) ])
+      | _ -> none)
   (* Negation swaps the two branches. *)
   | Ast.Unary (Ast.Not, inner) ->
       let when_true, when_false = narrows inner in
@@ -71,27 +61,40 @@ let rec narrows (e : Ast.expr) : refinement * refinement =
       ([], fa @ fb)
   | _ -> none
 
-let apply (r : refinement) d = List.fold_left (fun d (x, t) -> State.refine x t d) d r
+let apply (r : refinement) d =
+  List.fold_left (fun d (p, t) -> State.refine_path p t d) d r
 
-(* --- expressions ---------------------------------------------------------- *)
-let rec synth ctx d (e : Ast.expr) : Ty.t =
+(* --- expressions ----------------------------------------------------------
+   a call may write any field *)
+let rec synth ctx d (e : Ast.expr) : Ty.t * State.t =
   match e with
   | Ast.Ident x -> (
       match State.lookup x d with
-      | Some t -> t
+      | Some t -> (t, d)
       | None -> error "%s is not defined" x)
-  | Ast.Number n -> Ty.num n
-  | Ast.String s -> Ty.str s
-  | Ast.Bool b -> Ty.bool_ b
+  | Ast.Number n -> (Ty.num n, d)
+  | Ast.String s -> (Ty.str s, d)
+  | Ast.Bool b -> (Ty.bool_ b, d)
   | Ast.ObjectLit props ->
-      Ty.record (List.map (fun (p : Ast.prop) -> (p.name, synth ctx d p.value)) props)
+      let fields, d =
+        List.fold_left
+          (fun (acc, d) (p : Ast.prop) ->
+            let t, d = synth ctx d p.value in
+            ((p.name, t) :: acc, d))
+          ([], d) props
+      in
+      (Ty.record (List.rev fields), d)
   | Ast.Member (obj, field) -> (
-      let t = synth ctx d obj in
-      match project t (Row.Name field) with
-      | Some ft -> ft
-      | None -> error "property %s does not exist on type %s" field (Ty.show t))
+      (* check the state first *)
+      match Option.bind (path_of e) (fun p -> State.lookup_path p d) with
+      | Some t -> (t, d)
+      | None -> (
+          let t, d = synth ctx d obj in
+          match Ty.project t field with
+          | Some ft -> (ft, d)
+          | None -> error "property %s does not exist on type %s" field (Ty.show t)))
   | Ast.Call (callee, args) -> (
-      let ft = synth ctx d callee in
+      let ft, d = synth ctx d callee in
       match as_arrow ft with
       | None -> error "%s is not callable: its type is %s" (Ast.show_expr callee) (Ty.show ft)
       | Some (params, result) ->
@@ -100,45 +103,56 @@ let rec synth ctx d (e : Ast.expr) : Ty.t =
             error "%s expects %d argument%s but got %d" (Ast.show_expr callee) want
               (if want = 1 then "" else "s")
               got
-          else (
-            List.iter2 (fun a p -> check ctx d a p) args params;
-            result))
+          else
+            (* args evaluated first *)
+            let d = List.fold_left2 (fun d a p -> check ctx d a p) d args params in
+            (result, State.forget_fields d))
   | Ast.Assign (lhs, rhs) ->
-      let target = assign_target ctx d lhs in
-      check ctx d rhs target;
-      synth ctx d rhs
+      let target, d = assign_target ctx d lhs in
+      let t, d = synth ctx d rhs in
+      if not (Subty.subty t target) then
+        error "%s has type %s, which is not assignable to %s" (Ast.show_expr rhs)
+          (Ty.show t) (Ty.show target);
+      let d = match path_of lhs with Some p -> State.forget_path p d | None -> d in
+      (t, d)
   | Ast.Unary (Ast.TypeOf, operand) ->
-      let t = synth ctx d operand in
-      Ty.any_of (List.map Ty.str (typeof_tags t))
+      let t, d = synth ctx d operand in
+      (Ty.any_of (List.map Ty.str (typeof_tags t)), d)
   | Ast.Unary (Ast.Not, operand) ->
-      ignore (synth ctx d operand);
-      Ty.boolean_
-  | Ast.Binary (op, a, b) -> (
-      let ta = synth ctx d a and tb = synth ctx d b in
-      match op with
-      (* && and || evaluate to operands, not boolean:*)
-      | Ast.And | Ast.Or -> Ty.or_ ta tb
-      | Ast.StrictEq | Ast.StrictNeq -> Ty.boolean_)
+      let _, d = synth ctx d operand in
+      (Ty.boolean_, d)
+  | Ast.Binary (op, a, b) ->
+      let ta, d = synth ctx d a in
+      let tb, d = synth ctx d b in
+      let t =
+        match op with
+        (* && and || evaluate to one of their operands, not to a boolean *)
+        | Ast.And | Ast.Or -> Ty.or_ ta tb
+        | Ast.StrictEq | Ast.StrictNeq -> Ty.boolean_
+      in
+      (t, d)
 
 and assign_target ctx d (lhs : Ast.expr) =
   match lhs with
   | Ast.Ident x -> (
       match State.lookup x d with
-      | Some t -> t
+      | Some t -> (t, d)
       | None -> error "%s is not defined" x)
   | Ast.Member (obj, field) -> (
-      let t = synth ctx d obj in
-      match project t (Row.Name field) with
-      | Some ft -> ft
+      let t, d = synth ctx d obj in
+      match Ty.project t field with
+      | Some ft -> (ft, d)
       | None -> error "property %s does not exist on type %s" field (Ty.show t))
+  (* Unreachable from parsed source: the parser rejects a non-lvalue here. *)
   | _ -> error "%s is not assignable" (Ast.show_expr lhs)
 
-(* Verify a term against a type already known *)
-and check ctx d (e : Ast.expr) (expected : Ty.t) =
-  let actual = synth ctx d e in
+(* Verify a term against a type already known, and return the state after it. *)
+and check ctx d (e : Ast.expr) (expected : Ty.t) : State.t =
+  let actual, d = synth ctx d e in
   if not (Subty.subty actual expected) then
     error "%s has type %s, which is not assignable to %s" (Ast.show_expr e)
-      (Ty.show actual) (Ty.show expected)
+      (Ty.show actual) (Ty.show expected);
+  d
 
 (* --- statements -----------------------------------------------------------
    takes a state and returns a state *)
@@ -147,24 +161,21 @@ let rec stmt ctx d (s : Ast.stmt) : State.t =
   match s with
   | Ast.TypeAlias _ -> d  (* already resolved into the type environment *)
   | Ast.ExprStmt e ->
-      ignore (synth ctx d e);
+      let _, d = synth ctx d e in
       d
   | Ast.VarDecl { name; ty = annotation; value; _ } ->
-      let t =
+      let t, d =
         match annotation with
         | Some a ->
             let declared = Elab.ty ctx.types a in
-            check ctx d value declared;
-            declared
+            (declared, check ctx d value declared)
         | None -> synth ctx d value
       in
       State.bind name t d
   | Ast.Return e -> (
       match (ctx.result, e) with
       | None, _ -> error "return outside a function"
-      | Some expected, Some value ->
-          check ctx d value expected;
-          d
+      | Some expected, Some value -> check ctx d value expected
       | Some expected, None ->
           if not (Subty.subty Ty.top expected) then
             error "this function must return %s" (Ty.show expected);
@@ -174,7 +185,8 @@ let rec stmt ctx d (s : Ast.stmt) : State.t =
       ignore (block ctx d body);
       d
   | Ast.If { cond; then_; else_ } ->
-      ignore (synth ctx d cond);
+      (* condition evaluated first *)
+      let _, d = synth ctx d cond in
       let when_true, when_false = narrows cond in
       let d_then = apply when_true d and d_else = apply when_false d in
       let after_then =

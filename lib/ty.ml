@@ -80,6 +80,21 @@ let constr_record name fields = Row (Row.constr_record name fields)
 let constr_named name fields = Row (Row.constr_named name fields)
 
 (* printing: ts spelling *)
+let rec project t field =
+  let label = Row.Name field in
+  match t with
+  | Row r -> Row.lookup label r
+  | Or (a, b) -> (
+      match (project a field, project b field) with
+      | Some x, Some y -> Some (or_ x y)
+      | _ -> None)
+  | And (a, b) -> (
+      match (project a field, project b field) with
+      | Some x, Some y -> Some (and_ x y)
+      | Some x, None | None, Some x -> Some x
+      | None, None -> None)
+  | _ -> None
+
 let show_base = function String -> "string" | Number -> "number" | Boolean -> "boolean"
 
 let show_lit = function

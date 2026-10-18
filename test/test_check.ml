@@ -251,9 +251,9 @@ let () =
 (* --- what does not narrow -------------------------------------------------- *)
 
 let () =
-  (* A FIELD is not a name. Narrowing one is unsound without ownership, since
-     any call may write it, so it is deliberately left alone. *)
-  rejects
+  (* A field narrows like a variable, since the state can hold a fact about a
+     path. What it cannot survive is a call — see below. *)
+  accepts
     (p
        {|type B = { v: string | number }
 function f(b: B) { if (typeof b.v === "string") { wantsString(b.v); } }|});
@@ -278,32 +278,32 @@ let () =
   (* the live branch is still checked *)
   rejects {|function f(x: string) { if (typeof x === "string") { let q = undefinedName; } }|}
 
-(* --- the shortcoming -------------------------------------------------------
+(* --- a call invalidates field refinements ----------------------------------
 
-   This layer is flow-INSENSITIVE. An [if] checks both branches against the
-   incoming state and discards whatever its condition proved, so a narrowing
-   guard buys nothing. These two programs differ by one line — a call that
-   invalidates the narrowing — and this checker gives them the same verdict.
+   A call may write any field reachable from anything it can see, and a
+   signature does not say which, so every field refinement is dropped at a
+   call. Sound, and blunt: a call that touches nothing costs them all.
 
-     tsc --strict    accepts both; the second throws at runtime
-     this checker    rejects both
-     the goal        accept the first, reject the second
+   These two programs differ by one line, and now get different verdicts.
 
-   Increment 2 adds the rules that refine the state, which makes the first
-   pass. Increment 3 adds separation types, which keeps the second rejected. *)
+     tsc --strict    accepts both; the second is the one that throws
+     this checker    accepts the first, rejects the second
+
+   Specifications and ownership are what make the invalidation exact rather
+   than total. Until then the precision cost is real, and pinned below. *)
 
 let safe =
-  {|type Box = { v: string | number }
-function wantsString(s: string): number { return 1; }
-function g(b: Box) {
+  p
+    {|type Box = { v: string | number }
+function f(b: Box) {
   if (typeof b.v === "string") {
     wantsString(b.v);
   }
 }|}
 
 let unsound =
-  {|type Box = { v: string | number }
-function wantsString(s: string): number { return 1; }
+  p
+    {|type Box = { v: string | number }
 function mutate(b: Box) { b.v = 42; }
 function f(b: Box) {
   if (typeof b.v === "string") {
@@ -313,24 +313,66 @@ function f(b: Box) {
 }|}
 
 let () =
-  rejects safe;
+  accepts safe;
   rejects unsound;
-  incr total;
-  (* and for the same reason, which is the point *)
-  (match (run safe, run unsound) with
-  | Error a, Error b when a = b -> ()
-  | Error a, Error b ->
-      incr failures;
-      Printf.printf "FAIL  the two programs are rejected differently\n  %s\n  %s\n" a b
-  | _ ->
-      incr failures;
-      Printf.printf "FAIL  both programs should be rejected\n");
-  (* without the guard, the same call is rejected identically: the guard is
-     doing nothing at all *)
+  (* the write itself also invalidates, without any call involved *)
   rejects
-    {|type Box = { v: string | number }
-function wantsString(s: string): number { return 1; }
-function g(b: Box) { wantsString(b.v); }|}
+    (p
+       {|type Box = { v: string | number }
+function f(b: Box) {
+  if (typeof b.v === "string") {
+    b.v = 42;
+    wantsString(b.v);
+  }
+}|});
+  (* an alias makes no difference: any call drops the refinement, whether or
+     not the object is passed. That is what keeps this sound, and it is the
+     case a passing-based rule would get wrong. *)
+  rejects
+    (p
+       {|type Box = { v: string | number }
+function mutate(b: Box) { b.v = 42; }
+function f(b: Box) {
+  let g = b;
+  if (typeof b.v === "string") {
+    mutate(g);
+    wantsString(b.v);
+  }
+}|})
+
+(* The precision cost, recorded rather than left to be discovered. A call that
+   cannot touch the field still invalidates it. *)
+let () =
+  rejects
+    (p
+       {|type Box = { v: string | number }
+function harmless(): number { return 1; }
+function f(b: Box) {
+  if (typeof b.v === "string") {
+    harmless();
+    wantsString(b.v);
+  }
+}|});
+  (* but arguments are evaluated before the call, so the refinement still
+     holds while they are read *)
+  accepts
+    (p
+       {|type Box = { v: string | number }
+function f(b: Box) {
+  if (typeof b.v === "string") {
+    wantsString(b.v);
+  }
+}|});
+  (* a local variable is unaffected: only fields are dropped *)
+  accepts
+    (p
+       {|function harmless(): number { return 1; }
+function f(x: string | number) {
+  if (typeof x === "string") {
+    harmless();
+    wantsString(x);
+  }
+}|})
 
 (* --- conditions and typeof ------------------------------------------------- *)
 

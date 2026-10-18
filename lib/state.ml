@@ -11,7 +11,17 @@ type heap =
    TODO: existential quantification. each conjunct as
    exists v*. sigma /\ pi; fresh result variables will need it at entailment. *)
 
-type conjunct = { heap : heap; bindings : (string * Ty.t) list }
+(* --- paths ---------------------------------------------------------------
+   allow fields of record to have a type *)
+
+type path = { root : string; fields : string list }
+
+let var name = { root = name; fields = [] }
+let field p f = { p with fields = p.fields @ [ f ] }
+let is_var p = p.fields = []
+let show_path p = String.concat "." (p.root :: p.fields)
+
+type conjunct = { heap : heap; bindings : (path * Ty.t) list }
 
 (* A disjunction. The empty list is false: no state satisfies it, so the
    program point is unreachable. *)
@@ -32,18 +42,34 @@ let or_ (a : t) (b : t) : t = a @ b
 let bind name t (d : t) : t =
   List.map
     (fun c ->
-      { c with bindings = (name, t) :: List.remove_assoc name c.bindings })
+      let others = List.filter (fun (q, _) -> q.root <> name) c.bindings in
+      { c with bindings = (var name, t) :: others })
     d
 
-let lookup name (d : t) =
+let type_in_conjunct c (p : path) =
+  let rec go current prefix = function
+    | [] -> current
+    | f :: rest -> (
+        let prefix = prefix @ [ f ] in
+        match List.assoc_opt { root = p.root; fields = prefix } c.bindings with
+        | Some t -> go (Some t) prefix rest
+        | None -> (
+            match current with
+            | None -> None
+            | Some t -> go (Ty.project t f) prefix rest))
+  in
+  go (List.assoc_opt (var p.root) c.bindings) [] p.fields
+
+let lookup_path (p : path) (d : t) =
   match d with
   | [] -> None
   | _ ->
-      let types = List.map (fun c -> List.assoc_opt name c.bindings) d in
+      let types = List.map (fun c -> type_in_conjunct c p) d in
       if List.for_all Option.is_some types then
         Some (Ty.any_of (List.map Option.get types))
       else None
 
+let lookup name d = lookup_path (var name) d
 let mem name (d : t) = Option.is_some (lookup name d)
 
 let narrow existing t =
@@ -59,17 +85,40 @@ let narrow existing t =
     let dropped = drop existing in
     if Subty.equiv dropped intersected then dropped else intersected
 
-let refine name t (d : t) : t =
+let refine_path (p : path) t (d : t) : t =
   prune
     (List.map
        (fun c ->
-         match List.assoc_opt name c.bindings with
+         match type_in_conjunct c p with
          | None -> c
          | Some existing ->
-             { c with bindings = (name, narrow existing t) :: List.remove_assoc name c.bindings })
+             {
+               c with
+               bindings = (p, narrow existing t) :: List.remove_assoc p c.bindings;
+             })
        d)
 
+let refine name t d = refine_path (var name) t d
+
+(* Narrow by the complement, as the else-branch of a type test does. *)
+let refine_path_out p t d = refine_path p (Ty.not_ t) d
 let refine_out name t d = refine name (Ty.not_ t) d
+
+(* current behaviour: remove all narrowing after a call TODO: add ownership and tracking *)
+let forget_path (p : path) (d : t) : t =
+  let under (q : path) =
+    q.root = p.root
+    && List.length q.fields >= List.length p.fields
+    && List.filteri (fun i _ -> i < List.length p.fields) q.fields = p.fields
+  in
+  List.map
+    (fun c -> { c with bindings = List.filter (fun (q, _) -> not (under q)) c.bindings })
+    d
+
+let forget_fields (d : t) : t =
+  List.map
+    (fun c -> { c with bindings = List.filter (fun (q, _) -> is_var q) c.bindings })
+    d
 
 (* --- printing ------------------------------------------------------------- *)
 
@@ -80,7 +129,7 @@ let rec show_heap = function
 
 let show_conjunct c =
   let binds =
-    List.map (fun (x, t) -> x ^ ": " ^ Ty.show t) (List.rev c.bindings)
+    List.map (fun (p, t) -> show_path p ^ ": " ^ Ty.show t) (List.rev c.bindings)
   in
   match (c.heap, binds) with
   | Emp, [] -> "emp"
