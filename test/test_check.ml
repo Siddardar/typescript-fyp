@@ -278,19 +278,21 @@ let () =
   (* the live branch is still checked *)
   rejects {|function f(x: string) { if (typeof x === "string") { let q = undefinedName; } }|}
 
-(* --- a call invalidates field refinements ----------------------------------
+(* --- a call invalidates what it writes --------------------------------------
 
-   A call may write any field reachable from anything it can see, and a
-   signature does not say which, so every field refinement is dropped at a
-   call. Sound, and blunt: a call that touches nothing costs them all.
+   A signature says what a function returns, not what it changes, so the
+   effects are read off each body: the paths it writes, named by parameter.
+   A caller substitutes its arguments and invalidates only those, plus
+   anything that could be the same location.
 
    These two programs differ by one line, and now get different verdicts.
 
      tsc --strict    accepts both; the second is the one that throws
      this checker    accepts the first, rejects the second
 
-   Specifications and ownership are what make the invalidation exact rather
-   than total. Until then the precision cost is real, and pinned below. *)
+   What remains imprecise is aliasing: two paths with compatible field chains
+   may be rooted at the same object, so both go. Ownership is what turns "may
+   be" into "is not". *)
 
 let safe =
   p
@@ -340,10 +342,10 @@ function f(b: Box) {
   }
 }|})
 
-(* The precision cost, recorded rather than left to be discovered. A call that
-   cannot touch the field still invalidates it. *)
+(* A call that writes nothing costs nothing: the callee's effects are read off
+   its body, so only what it actually writes is invalidated. *)
 let () =
-  rejects
+  accepts
     (p
        {|type Box = { v: string | number }
 function harmless(): number { return 1; }
@@ -372,6 +374,93 @@ function f(x: string | number) {
     harmless();
     wantsString(x);
   }
+}|})
+
+(* --- effects are read off the body -----------------------------------------
+
+   A function's writes are inferred, not declared. Paper A supplies them in a
+   specification and lists inference as future work; requiring an annotation
+   on every function would make this unusable on ordinary TypeScript. *)
+
+let () =
+  (* a write through a local alias inside the callee still counts *)
+  rejects
+    (p
+       {|type Box = { v: string | number }
+function mutate(b: Box) { let c = b; c.v = 42; }
+function f(b: Box) {
+  if (typeof b.v === "string") { mutate(b); wantsString(b.v); }
+}|});
+  (* and so does one reached through another call *)
+  rejects
+    (p
+       {|type Box = { v: string | number }
+function inner(b: Box) { b.v = 42; }
+function outer(b: Box) { inner(b); }
+function f(b: Box) {
+  if (typeof b.v === "string") { outer(b); wantsString(b.v); }
+}|});
+  (* a function that writes a DIFFERENT field leaves this one alone *)
+  accepts
+    (p
+       {|type Box = { v: string | number; w: string | number }
+function mutate(b: Box) { b.w = 42; }
+function f(b: Box) {
+  if (typeof b.v === "string") { mutate(b); wantsString(b.v); }
+}|});
+  (* writing into a value the callee built itself is invisible here *)
+  accepts
+    (p
+       {|type Box = { v: string | number }
+function makes(): number { let o: Box = { v: 1 }; o.v = 2; return 1; }
+function f(b: Box) {
+  if (typeof b.v === "string") { makes(); wantsString(b.v); }
+}|});
+  (* recursion terminates, and its effects are still found *)
+  rejects
+    (p
+       {|type Box = { v: string | number }
+function loop(b: Box, n: number) { b.v = 42; loop(b, n); }
+function f(b: Box) {
+  if (typeof b.v === "string") { loop(b, 1); wantsString(b.v); }
+}|});
+  (* so does mutual recursion *)
+  rejects
+    (p
+       {|type Box = { v: string | number }
+function ping(b: Box) { pong(b); }
+function pong(b: Box) { b.v = 42; ping(b); }
+function f(b: Box) {
+  if (typeof b.v === "string") { ping(b); wantsString(b.v); }
+}|});
+  (* console.log writes nothing *)
+  accepts
+    (p
+       {|type Box = { v: string | number }
+function f(b: Box) {
+  if (typeof b.v === "string") { console.log(1); wantsString(b.v); }
+}|})
+
+(* --- a direct write invalidates possible aliases ---------------------------
+
+   No call is involved here. c and b may be the same object, so writing c.v
+   has to invalidate b.v. *)
+
+let () =
+  rejects
+    (p
+       {|type Box = { v: string | number }
+function f(b: Box) {
+  let c = b;
+  if (typeof b.v === "string") { c.v = 42; wantsString(b.v); }
+}|});
+  (* a write to a different field cannot collide *)
+  accepts
+    (p
+       {|type Box = { v: string | number; w: string | number }
+function f(b: Box) {
+  let c = b;
+  if (typeof b.v === "string") { c.w = 42; wantsString(b.v); }
 }|})
 
 (* --- conditions and typeof ------------------------------------------------- *)

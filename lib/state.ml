@@ -104,7 +104,26 @@ let refine name t d = refine_path (var name) t d
 let refine_path_out p t d = refine_path p (Ty.not_ t) d
 let refine_out name t d = refine name (Ty.not_ t) d
 
-(* current behaviour: remove all narrowing after a call TODO: add ownership and tracking *)
+(* Discard every recorded fact that a write through [p] could invalidate. *)
+let forget_aliases (p : path) (d : t) : t =
+  if is_var p then d
+  else
+    let rec compatible a b =
+      match (a, b) with
+      | [], _ | _, [] -> true
+      | x :: xs, y :: ys -> x = y && compatible xs ys
+    in
+    List.map
+      (fun c ->
+        {
+          c with
+          bindings =
+            List.filter
+              (fun (q, _) -> is_var q || not (compatible p.fields q.fields))
+              c.bindings;
+        })
+      d
+
 let forget_path (p : path) (d : t) : t =
   let under (q : path) =
     q.root = p.root

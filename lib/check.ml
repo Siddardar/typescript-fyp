@@ -2,7 +2,7 @@ exception Type_error of string
 
 let error fmt = Printf.ksprintf (fun s -> raise (Type_error s)) fmt
 
-type ctx = { types : Elab.env; result : Ty.t option }
+type ctx = { types : Elab.env; result : Ty.t option; effects : Effects.env }
 
 let as_arrow = function Ty.Arrow (ps, r) -> Some (ps, r) | _ -> None
 
@@ -106,14 +106,20 @@ let rec synth ctx d (e : Ast.expr) : Ty.t * State.t =
           else
             (* args evaluated first *)
             let d = List.fold_left2 (fun d a p -> check ctx d a p) d args params in
-            (result, State.forget_fields d))
+            (result, apply_effects ctx d callee args))
   | Ast.Assign (lhs, rhs) ->
       let target, d = assign_target ctx d lhs in
       let t, d = synth ctx d rhs in
       if not (Subty.subty t target) then
         error "%s has type %s, which is not assignable to %s" (Ast.show_expr rhs)
           (Ty.show t) (Ty.show target);
-      let d = match path_of lhs with Some p -> State.forget_path p d | None -> d in
+      (* write invalidates target and anything that could be the same mem location
+         TODO: needs ownership *)
+      let d =
+        match path_of lhs with
+        | Some p -> State.forget_aliases p (State.forget_path p d)
+        | None -> State.forget_fields d
+      in
       (t, d)
   | Ast.Unary (Ast.TypeOf, operand) ->
       let t, d = synth ctx d operand in
@@ -131,6 +137,25 @@ let rec synth ctx d (e : Ast.expr) : Ty.t * State.t =
         | Ast.StrictEq | Ast.StrictNeq -> Ty.boolean_
       in
       (t, d)
+
+(* invalidate what a call writes*)
+and apply_effects ctx d callee args =
+  match
+    Option.bind (Effects.callee_name callee) (fun n -> List.assoc_opt n ctx.effects)
+  with
+  | None | Some Effects.Unknown -> State.forget_fields d
+  | Some (Effects.Writes targets) ->
+      List.fold_left
+        (fun d (t : Effects.target) ->
+          match List.nth_opt args t.param with
+          | None -> State.forget_fields d
+          | Some arg -> (
+              match path_of arg with
+              | None -> d
+              | Some base ->
+                  let written = List.fold_left State.field base t.fields in
+                  State.forget_aliases written (State.forget_path written d)))
+        d targets
 
 and assign_target ctx d (lhs : Ast.expr) =
   match lhs with
@@ -235,6 +260,7 @@ let prelude =
 let program (prog : Ast.program) =
   let types = Elab.program prog in
   let signatures = Elab.signatures types prog in
+  let effects = Effects.analyse prog in
 
   let top =
     List.fold_left
@@ -244,9 +270,9 @@ let program (prog : Ast.program) =
   let check_decl d (s : Ast.stmt) =
     match s with
     | Ast.FunctionDecl { name; params; ret_type; body } ->
-        check_body { types; result = None } d name params ret_type body;
+        check_body { types; result = None; effects } d name params ret_type body;
         d
-    | s -> stmt { types; result = None } d s
+    | s -> stmt { types; result = None; effects } d s
   in
   ignore (List.fold_left check_decl top prog)
 
