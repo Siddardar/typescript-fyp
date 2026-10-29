@@ -106,6 +106,7 @@ let rec synth ctx d (e : Ast.expr) : Ty.t * State.t =
           else
             (* args evaluated first *)
             let d = List.fold_left2 (fun d a p -> check ctx d a p) d args params in
+            check_separation ctx d callee args;
             (result, apply_effects ctx d callee args))
   | Ast.Assign (lhs, rhs) ->
       let target, d = assign_target ctx d lhs in
@@ -117,7 +118,13 @@ let rec synth ctx d (e : Ast.expr) : Ty.t * State.t =
          TODO: needs ownership *)
       let d =
         match path_of lhs with
-        | Some p -> State.forget_aliases p (State.forget_path p d)
+        | Some p when not (State.is_var p) ->
+            (* A strong update on the target: this location definitely now
+               holds [t]. Anything that MAY be the same location is dropped
+               instead, since it either got this write or kept its old value
+               and the checker cannot tell which. *)
+            State.assign_path p t (State.forget_aliases p (State.forget_path p d))
+        | Some _ -> d  (* rebinding a variable is handled by its declaration *)
         | None -> State.forget_fields d
       in
       (t, d)
@@ -138,6 +145,37 @@ let rec synth ctx d (e : Ast.expr) : Ty.t * State.t =
       in
       (t, d)
 
+(* A function body assumes its parameters are distinct objects, so each call
+   has to show they are. Only positions the callee actually writes matter: two
+   arguments it never writes through may safely be the same thing.
+
+   This is Paper A's separating conjunction, req b |-> T * c |-> U, with the
+   obligation moved from a written precondition to a checked call site. *)
+and check_separation ctx d callee args =
+  match
+    Option.bind (Effects.callee_name callee) (fun n -> List.assoc_opt n ctx.effects)
+  with
+  | None | Some Effects.Unknown -> ()
+  | Some (Effects.Writes targets) ->
+      let written =
+        List.sort_uniq compare (List.map (fun (t : Effects.target) -> t.param) targets)
+      in
+      let paths = Array.of_list (List.map path_of args) in
+      List.iter
+        (fun i ->
+          Array.iteri
+            (fun j q ->
+              if i <> j then
+                match (paths.(i), q) with
+                | Some pi, Some pj when State.may_alias pi pj d ->
+                    error
+                      "%s writes through argument %d, so arguments %d and %d must \
+                       not be the same object"
+                      (Ast.show_expr callee) (i + 1) (i + 1) (j + 1)
+                | _ -> ())
+            paths)
+        (List.filter (fun i -> i < Array.length paths) written)
+
 (* invalidate what a call writes*)
 and apply_effects ctx d callee args =
   match
@@ -154,7 +192,15 @@ and apply_effects ctx d callee args =
               | None -> d
               | Some base ->
                   let written = List.fold_left State.field base t.fields in
-                  State.forget_aliases written (State.forget_path written d)))
+                  let d = State.forget_aliases written (State.forget_path written d) in
+                  (* Where the callee's write always happens and its type is
+                     known, record it: a strong update through the argument.
+                     Otherwise the path falls back to its declared type. *)
+                  if State.is_var written then d
+                  else
+                    match t.wrote with
+                    | Some ty -> State.assign_path written ty d
+                    | None -> d))
         d targets
 
 and assign_target ctx d (lhs : Ast.expr) =
@@ -189,6 +235,14 @@ let rec stmt ctx d (s : Ast.stmt) : State.t =
       let _, d = synth ctx d e in
       d
   | Ast.VarDecl { name; ty = annotation; value; _ } ->
+      (* Which object the new name denotes. A value built right here is nobody
+         else's; a plain copy is the same object; anything else is unknown. *)
+      let location =
+        match value with
+        | Ast.ObjectLit _ -> Some (State.fresh_loc ())
+        | Ast.Ident other -> State.loc_of other d
+        | _ -> None
+      in
       let t, d =
         match annotation with
         | Some a ->
@@ -196,7 +250,7 @@ let rec stmt ctx d (s : Ast.stmt) : State.t =
             (declared, check ctx d value declared)
         | None -> synth ctx d value
       in
-      State.bind name t d
+      State.set_loc name location (State.bind name t d)
   | Ast.Return e -> (
       match (ctx.result, e) with
       | None, _ -> error "return outside a function"
@@ -245,9 +299,15 @@ and check_body ctx d name (params : Ast.param list) ret_type body =
   let result =
     match ret_type with Some a -> Elab.ty ctx.types a | None -> Ty.top
   in
+  (* Each parameter is given its own location: distinct parameters are assumed
+     to be distinct objects. That assumption about the caller is discharged at
+     each call site. *)
   let inner =
     List.fold_left
-      (fun d (p : Ast.param) -> State.bind p.name (Elab.ty ctx.types p.ty) d)
+      (fun d (p : Ast.param) ->
+        State.set_loc p.name
+          (Some (State.fresh_loc ()))
+          (State.bind p.name (Elab.ty ctx.types p.ty) d))
       d params
   in
   ignore (block { ctx with result = Some result } inner body);

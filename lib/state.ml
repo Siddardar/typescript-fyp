@@ -21,7 +21,35 @@ let field p f = { p with fields = p.fields @ [ f ] }
 let is_var p = p.fields = []
 let show_path p = String.concat "." (p.root :: p.fields)
 
-type conjunct = { heap : heap; bindings : (path * Ty.t) list }
+(* --- abstract locations ---------------------------------------------------
+
+   Which object a variable denotes, as far as the checker can tell. Two
+   variables with different known locations cannot be the same object, so a
+   write through one leaves the other's refinements alone.
+
+   [None] means "could be anything", which is the conservative answer and is
+   what a value of unknown provenance gets.
+
+   Distinct parameters are given distinct locations on entry. That is an
+   ASSUMPTION about the caller, discharged at each call site: see the
+   separation obligation in Check. A function nobody calls keeps an unchecked
+   assumption, which is the usual caveat of reasoning about one function at a
+   time. *)
+
+type loc = int
+
+let next_loc = ref 0
+
+let fresh_loc () =
+  incr next_loc;
+  !next_loc
+
+type conjunct = {
+  heap : heap;
+  bindings : (path * Ty.t) list;
+  (* the object each variable denotes; absent means unknown *)
+  locs : (string * loc) list;
+}
 
 (* A disjunction. The empty list is false: no state satisfies it, so the
    program point is unreachable. *)
@@ -29,7 +57,7 @@ type t = conjunct list
 
 let unreachable : t = []
 let is_unreachable (d : t) = d = []
-let init : t = [ { heap = Emp; bindings = [] } ]
+let init : t = [ { heap = Emp; bindings = []; locs = [] } ]
 let conjuncts (d : t) = d
 
 let prune (d : t) =
@@ -39,12 +67,48 @@ let or_ (a : t) (b : t) : t = a @ b
 
 (* --- bindings ------------------------------------------------------------- *)
 
+(* Binding a name discards any fact about its fields and any location it had:
+   they described whatever it held before. *)
 let bind name t (d : t) : t =
   List.map
     (fun c ->
       let others = List.filter (fun (q, _) -> q.root <> name) c.bindings in
-      { c with bindings = (var name, t) :: others })
+      { c with bindings = (var name, t) :: others; locs = List.remove_assoc name c.locs })
     d
+
+(* Record which object a variable denotes. [None] leaves it unknown. *)
+let set_loc name (l : loc option) (d : t) : t =
+  List.map
+    (fun c ->
+      let rest = List.remove_assoc name c.locs in
+      { c with locs = (match l with Some l -> (name, l) :: rest | None -> rest) })
+    d
+
+let loc_of name (d : t) =
+  match d with
+  | [] -> None
+  | c :: rest ->
+      let first = List.assoc_opt name c.locs in
+      (* only trust it when every disjunct agrees *)
+      if List.for_all (fun c -> List.assoc_opt name c.locs = first) rest then first
+      else None
+
+(* Could these two PATHS be the same location? Their field chains must be
+   prefix-compatible and their roots may be the same object. *)
+let may_alias_root a b (d : t) =
+  a = b
+  ||
+  match (loc_of a d, loc_of b d) with
+  | Some x, Some y -> x = y
+  | _ -> true
+
+let may_alias (p : path) (q : path) (d : t) =
+  let rec compatible a b =
+    match (a, b) with
+    | [], _ | _, [] -> true
+    | x :: xs, y :: ys -> x = y && compatible xs ys
+  in
+  compatible p.fields q.fields && may_alias_root p.root q.root d
 
 let type_in_conjunct c (p : path) =
   let rec go current prefix = function
@@ -85,6 +149,16 @@ let narrow existing t =
     let dropped = drop existing in
     if Subty.equiv dropped intersected then dropped else intersected
 
+(* Replace what is recorded about a path, rather than narrowing it. This is a
+   STRONG update: it claims the path now holds exactly this, which only an
+   owner may say. The caller must have established that nothing else observes
+   the old value. *)
+let assign_path (p : path) t (d : t) : t =
+  prune
+    (List.map
+       (fun c -> { c with bindings = (p, t) :: List.remove_assoc p c.bindings })
+       d)
+
 let refine_path (p : path) t (d : t) : t =
   prune
     (List.map
@@ -119,7 +193,9 @@ let forget_aliases (p : path) (d : t) : t =
           c with
           bindings =
             List.filter
-              (fun (q, _) -> is_var q || not (compatible p.fields q.fields))
+              (fun (q, _) ->
+                is_var q
+                || not (compatible p.fields q.fields && may_alias_root p.root q.root d))
               c.bindings;
         })
       d

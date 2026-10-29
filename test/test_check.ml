@@ -463,6 +463,140 @@ function f(b: Box) {
   if (typeof b.v === "string") { c.w = 42; wantsString(b.v); }
 }|})
 
+(* --- abstract locations ----------------------------------------------------
+
+   Each variable denotes an object, as far as the checker can tell. A value
+   built here is nobody else's; a plain copy is the same object; anything of
+   unknown provenance may be anything. Two variables with different known
+   locations cannot collide, so a write through one leaves the other alone. *)
+
+let q src = p ("type Box = { v: string | number }\n" ^ src)
+
+let () =
+  (* freshly built, so it cannot be b *)
+  accepts
+    (q
+       {|function mutate(b: Box) { b.v = 42; }
+function f(b: Box) {
+  let c: Box = { v: 1 };
+  if (typeof b.v === "string") { mutate(c); wantsString(b.v); }
+}|});
+  (* a copy IS b *)
+  rejects
+    (q
+       {|function mutate(b: Box) { b.v = 42; }
+function f(b: Box) {
+  let c = b;
+  if (typeof b.v === "string") { mutate(c); wantsString(b.v); }
+}|});
+  (* distinct parameters are assumed distinct, discharged at each call *)
+  accepts
+    (q
+       {|function mutate(b: Box) { b.v = 42; }
+function f(b: Box, c: Box) {
+  if (typeof b.v === "string") { mutate(c); wantsString(b.v); }
+}|});
+  (* a value of unknown provenance may be anything *)
+  rejects
+    (q
+       {|function id(x: Box): Box { return x; }
+function f(b: Box) {
+  let c = id(b);
+  if (typeof b.v === "string") { c.v = 42; wantsString(b.v); }
+}|});
+  (* the same distinctions apply to a direct write *)
+  accepts
+    (q
+       {|function f(b: Box) {
+  let c: Box = { v: 1 };
+  if (typeof b.v === "string") { c.v = 42; wantsString(b.v); }
+}|});
+  rejects
+    (q
+       {|function f(b: Box) {
+  let c = b;
+  if (typeof b.v === "string") { c.v = 42; wantsString(b.v); }
+}|})
+
+(* --- the separation obligation at a call -----------------------------------
+
+   A body assumes its parameters are distinct objects. Each call has to show
+   they are, which is Paper A's req b |-> T * c |-> U with the obligation
+   moved from a written precondition to a checked call site.
+
+   Only positions the callee writes matter: two arguments it never writes
+   through may safely be the same thing. *)
+
+let () =
+  (* the hole phase 1 would otherwise leave: f relies on b and c being
+     separate, and this call breaks that *)
+  rejects
+    (q
+       {|function mutate(b: Box) { b.v = 42; }
+function f(b: Box, c: Box) {
+  if (typeof b.v === "string") { mutate(c); wantsString(b.v); }
+}
+function caller(x: Box) { f(x, x); }|});
+  rejects (q {|function two(b: Box, c: Box) { c.v = 42; }
+function caller(x: Box) { two(x, x); }|});
+  (* a copy is the same object, so it fails the same way *)
+  rejects (q {|function two(b: Box, c: Box) { c.v = 42; }
+function caller(x: Box) { let g = x; two(x, g); }|});
+  (* distinct arguments are fine *)
+  accepts (q {|function two(b: Box, c: Box) { c.v = 42; }
+function caller(x: Box, y: Box) { two(x, y); }|});
+  (* so is a freshly built one *)
+  accepts (q {|function two(b: Box, c: Box) { c.v = 42; }
+function caller(x: Box) { let f: Box = { v: 1 }; two(x, f); }|});
+  (* a callee that writes nothing imposes no obligation *)
+  accepts (q {|function reads(b: Box, c: Box): number { return 1; }
+function caller(x: Box) { reads(x, x); }|})
+
+(* --- strong update ---------------------------------------------------------
+
+   Where the callee's write always happens and the type it leaves is known,
+   the caller records that type instead of falling back to the declared one.
+   Only an owner may say this, which is what the separation obligation
+   establishes. *)
+
+let () =
+  (* the case BOTH this checker and tsc previously got wrong: tsc thinks b.v
+     is still a string, and dropping to the declared type is no better *)
+  accepts
+    (q
+       {|function mutate(b: Box) { b.v = 42; }
+function f(b: Box) {
+  if (typeof b.v === "string") { mutate(b); wantsNumber(b.v); }
+}|});
+  (* and it is no longer a string *)
+  rejects
+    (q
+       {|function mutate(b: Box) { b.v = 42; }
+function f(b: Box) {
+  if (typeof b.v === "string") { mutate(b); wantsString(b.v); }
+}|});
+  (* a direct write is the same *)
+  accepts
+    (q
+       {|function f(b: Box) {
+  if (typeof b.v === "string") { b.v = 42; wantsNumber(b.v); }
+}|});
+  (* a write that may not run must NOT be claimed: the old value may survive *)
+  rejects
+    (q
+       {|function maybe(b: Box, c: boolean) { if (c) { b.v = 42; } }
+function f(b: Box, c: boolean) {
+  if (typeof b.v === "string") { maybe(b, c); wantsNumber(b.v); }
+}|});
+  (* nor may one whose type cannot be read off the expression *)
+  rejects
+    (q
+       {|function gives(): string | number { return 1; }
+function opaque(b: Box) { b.v = gives(); }
+function f(b: Box) {
+  if (typeof b.v === "string") { opaque(b); wantsNumber(b.v); }
+}|})
+
 (* --- conditions and typeof ------------------------------------------------- *)
 
 let () =

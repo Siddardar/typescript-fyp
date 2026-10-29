@@ -115,14 +115,14 @@ let () =
    are in place, so separation types extend this module rather than replace it. *)
 
 let () =
-  let c = { State.heap = State.PointsTo ("b", box); bindings = [ (State.var "x", Ty.string_) ] } in
+  let c = { State.heap = State.PointsTo ("b", box); bindings = [ (State.var "x", Ty.string_) ]; locs = [] } in
   check_show "a heap assertion prints"
     [ c ]
     {|b |-> { %tag: "", v: string | number } /\ x: string|};
   check_show "separating conjunction prints"
     [ { State.heap = State.Star (State.PointsTo ("a", Ty.string_),
                                  State.PointsTo ("b", Ty.number_));
-        bindings = [] } ]
+        bindings = []; locs = [] } ]
     "a |-> string * b |-> number"
 
 let () =

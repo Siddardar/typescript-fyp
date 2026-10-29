@@ -1,0 +1,23 @@
+#!/bin/sh
+# Build if needed, then run the checker.
+#
+#   ./tshl file.ts              type-check a file
+#   ./tshl -s "let x = 1;"      type-check a string
+#   ./tshl parse file.ts        print the parsed AST
+#   ./tshl bench                run the benchmark comparison
+#
+# Any other argument is passed straight through to the binary.
+
+set -e
+root=$(cd "$(dirname "$0")" && pwd)
+dune build --root "$root" 2>&1 >/dev/null || { dune build --root "$root"; exit 1; }
+bin="$root/_build/default/bin/main.exe"
+
+case "$1" in
+  '')         exec "$bin" ;;
+  -s)         shift; exec "$bin" check-string "$@" ;;
+  bench)      exec sh "$root/_refs/ts/testing/run.sh" ;;
+  check|check-string|parse|parse-string)
+              exec "$bin" "$@" ;;
+  *)          exec "$bin" check "$@" ;;   # a bare path means check
+esac
